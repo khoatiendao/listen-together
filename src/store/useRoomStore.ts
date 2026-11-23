@@ -346,9 +346,18 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
       });
     });
 
-    socket.on('chat:requestCooldown', (data: { nextAllowedAt: number }) => {
-      set({ donateCooldownUntil: data.nextAllowedAt });
-    });
+    socket.on(
+      'chat:requestCooldown',
+      (data: { remainingMs?: number; nextAllowedAt?: number }) => {
+        const remainingMs =
+          typeof data.remainingMs === 'number'
+            ? data.remainingMs
+            : data.nextAllowedAt
+            ? Math.max(0, data.nextAllowedAt - Date.now())
+            : 0;
+        set({ donateCooldownUntil: Date.now() + remainingMs });
+      }
+    );
 
     socket.on('reaction:new', (reaction: FloatingReaction) => {
       set((state) => ({

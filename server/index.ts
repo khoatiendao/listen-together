@@ -13,10 +13,12 @@ import {
   ChatReactSchema,
   ChatSeenSchema,
   extractYouTubeId,
+  IpAttackShield,
   JoinProfileSchema,
   ReactionSchema,
   sanitizeText,
   SeekSchema,
+  setBoundedMap,
   SocketRateLimiter,
 } from './security.ts';
 import {
@@ -35,37 +37,113 @@ import {
 
 const PORT = Number(process.env.PORT || 3001);
 const app = express();
+app.disable('x-powered-by');
 // Trust reverse proxy (Render / Cloudflare) so rate-limiter & IP protection identify real user IPs
 app.set('trust proxy', 1);
 const httpServer = createServer(app);
+// Anti-Slowloris HTTP timeouts
+httpServer.headersTimeout = 15_000;
+httpServer.requestTimeout = 20_000;
+httpServer.keepAliveTimeout = 65_000;
+
+const ipShield = new IpAttackShield();
+
+function getExpressClientIp(req: express.Request): string {
+  return (
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+    req.ip ||
+    req.socket.remoteAddress ||
+    'unknown'
+  );
+}
 
 // 1. HTTP Security Middlewares
 app.use(
   helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    hsts: { maxAge: 31536000, includeSubDomains: true },
   })
 );
 app.use(cors());
-app.use(express.json({ limit: '32kb' }));
+app.use(express.json({ limit: '16kb' }));
+
+// Global IP Ban Firewall Middleware
+app.use((req, res, next) => {
+  const ip = getExpressClientIp(req);
+  const banStatus = ipShield.isBanned(ip);
+  if (banStatus.banned) {
+    res.status(429).json({
+      error: `IP tạm thời bị chặn do nghi ngờ tấn công/spam. Thử lại sau ${banStatus.remainingSec} giây.`,
+    });
+    return;
+  }
+  next();
+});
+
+// Global API Rate Limit (protects all /api/* endpoints from HTTP DDoS)
+const globalApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 240,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Quá nhiều yêu cầu từ địa chỉ của bạn. Vui lòng chậm lại!' },
+});
+app.use('/api', globalApiLimiter);
 
 const searchApiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 120,
+  max: 90,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Bạn tìm kiếm quá nhanh, vui lòng đợi vài giây nhé!' },
 });
 
-// 2. Socket.io Server (Generous pingTimeout so background tabs & cloud proxies never cause false disconnect/reconnect storms)
+// Strict TTS Proxy Rate Limit + In-Memory Audio Buffer Cache (prevents TTS bandwidth flooding)
+const ttsApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 45,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Quá nhiều yêu cầu giọng đọc MC AI, vui lòng đợi giây lát.' },
+});
+const ttsAudioCache = new Map<string, Buffer>();
+const MAX_TTS_CACHE_ITEMS = 80;
+
+// 2. Socket.io Server (Strict 16KB buffer limit, generous pingTimeout, global connection cap)
+const MAX_GLOBAL_SOCKETS = 300;
 const io = new Server(httpServer, {
-  maxHttpBufferSize: 32 * 1024,
+  maxHttpBufferSize: 16 * 1024, // 16KB max packet size
   pingInterval: 25000,
   pingTimeout: 60000,
   cors: {
     origin: '*',
     methods: ['GET', 'POST'],
   },
+});
+
+// Socket.io Handshake Firewall Middleware (blocks banned IPs & connection floods BEFORE socket even opens)
+io.use((socket, next) => {
+  const clientIp =
+    (socket.handshake.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+    socket.handshake.address ||
+    'unknown';
+
+  const banStatus = ipShield.isBanned(clientIp);
+  if (banStatus.banned) {
+    return next(new Error(`IP bị tạm khóa do spam (${banStatus.remainingSec}s)`));
+  }
+
+  if (io.engine.clientsCount >= MAX_GLOBAL_SOCKETS) {
+    return next(new Error('Phòng trà đang quá tải kết nối, vui lòng thử lại sau ít phút!'));
+  }
+
+  if (!ipShield.recordConnectionAttempt(clientIp)) {
+    return next(new Error('Phát hiện kết nối dồn dập bất thường, tạm khóa IP 5 phút!'));
+  }
+
+  return next();
 });
 
 // 3. Default Curated Acoustic / Lofi Tea Room Tracks
@@ -282,16 +360,22 @@ const donateRequestCooldownMap = new Map<string, number>(); // clientId -> lastU
 const DONATE_REQUEST_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes
 let latestDonateRequest: DonateRequestAlert | null = null;
 
-// Clean up expired entries in recentlySeenClients so memory stays small
+// Clean up expired entries in rate limiters, IP shield, and caches so RAM never leaks
 setInterval(() => {
   chatLimiter.cleanup();
   queueLimiter.cleanup();
   controlLimiter.cleanup();
   reactionLimiter.cleanup();
+  ipShield.cleanup();
   const now = Date.now();
   for (const [cid, info] of recentlySeenClients.entries()) {
     if (now - info.lastSeenAt > RECONNECT_GRACE_PERIOD_MS * 2) {
       recentlySeenClients.delete(cid);
+    }
+  }
+  for (const [cid, ts] of donateRequestCooldownMap.entries()) {
+    if (now - ts > DONATE_REQUEST_COOLDOWN_MS * 2) {
+      donateRequestCooldownMap.delete(cid);
     }
   }
 }, 60000);
@@ -464,7 +548,7 @@ async function cachedFastSearch(query: string, limit = 8): Promise<SearchResultI
   const searchPromise = (async () => {
     try {
       const fastResults = await fastInnerTubeSearch(query, limit);
-      searchQueryCache.set(normalizedKey, { timestamp: Date.now(), results: fastResults });
+      setBoundedMap(searchQueryCache, normalizedKey, { timestamp: Date.now(), results: fastResults }, 150);
       return fastResults;
     } catch {
       // Fallback to yt-search if InnerTube ever fails
@@ -478,7 +562,7 @@ async function cachedFastSearch(query: string, limit = 8): Promise<SearchResultI
         durationText: v.timestamp || '0:00',
         views: Number(v.views || 0),
       }));
-      searchQueryCache.set(normalizedKey, { timestamp: Date.now(), results: videos });
+      setBoundedMap(searchQueryCache, normalizedKey, { timestamp: Date.now(), results: videos }, 150);
       return videos;
     } finally {
       inFlightSearches.delete(normalizedKey);
@@ -498,13 +582,21 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-// AI MC Voice TTS Proxy (Vietnamese natural voice, zero API key, streams MP3 directly to client)
-app.get('/api/tts', searchApiLimiter, async (req, res) => {
+// AI MC Voice TTS Proxy (Vietnamese natural voice, rate-limited + LRU cached against DDoS)
+app.get('/api/tts', ttsApiLimiter, async (req, res) => {
   try {
     const rawText = String(req.query.text || '').trim();
     const cleanText = sanitizeText(rawText, 240);
     if (!cleanText) {
       res.status(400).json({ error: 'Thiếu nội dung đọc' });
+      return;
+    }
+
+    const cachedAudio = ttsAudioCache.get(cleanText);
+    if (cachedAudio) {
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.send(cachedAudio);
       return;
     }
 
@@ -527,6 +619,7 @@ app.get('/api/tts', searchApiLimiter, async (req, res) => {
 
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
+      setBoundedMap(ttsAudioCache, cleanText, buffer, MAX_TTS_CACHE_ITEMS);
       res.setHeader('Content-Type', 'audio/mpeg');
       res.setHeader('Cache-Control', 'public, max-age=3600');
       res.send(buffer);
@@ -784,6 +877,27 @@ io.on('connection', (socket: Socket) => {
     return;
   }
   ipConnectionCount.set(clientIp, currentIpCount + 1);
+
+  // Per-Socket Event Flood Guard (Anti-WebSocket DoS: max 35 total events per 10 seconds per socket)
+  let socketEventTimestamps: number[] = [];
+  socket.use((_packet, next) => {
+    const now = Date.now();
+    socketEventTimestamps = socketEventTimestamps.filter((t) => now - t < 10_000);
+    socketEventTimestamps.push(now);
+    if (socketEventTimestamps.length > 35) {
+      const wasBanned = ipShield.addStrike(clientIp, 4);
+      socket.emit('security:warning', {
+        message: wasBanned
+          ? '🛡️ Phát hiện tấn công flood gói tin! IP đã bị ngắt kết nối và khóa tạm 5 phút.'
+          : '⚠️ Bạn gửi quá nhiều tín hiệu cùng lúc. Vui lòng dừng thao tác spam!',
+      });
+      if (wasBanned) {
+        socket.disconnect(true);
+      }
+      return;
+    }
+    next();
+  });
 
   socket.on('clock:ping', (clientSentAt: number, callback?: (data: { clientSentAt: number; serverTime: number }) => void) => {
     if (typeof callback === 'function') {
@@ -1422,10 +1536,12 @@ io.on('connection', (socket: Socket) => {
       const lastUsed = donateRequestCooldownMap.get(user.clientId) || 0;
       const elapsed = now - lastUsed;
       if (elapsed < DONATE_REQUEST_COOLDOWN_MS) {
-        const remainingSec = Math.ceil((DONATE_REQUEST_COOLDOWN_MS - elapsed) / 1000);
+        const remainingMs = DONATE_REQUEST_COOLDOWN_MS - elapsed;
+        const remainingSec = Math.ceil(remainingMs / 1000);
         const mins = Math.floor(remainingSec / 60);
         const secs = remainingSec % 60;
         const timeStr = mins > 0 ? `${mins} phút ${secs} giây` : `${secs} giây`;
+        socket.emit('chat:requestCooldown', { remainingMs });
         socket.emit('security:warning', {
           message: `⏳ Bạn vừa gửi /request rồi! Vui lòng đợi ${timeStr} nữa để gửi lời nhắn phát thanh tiếp theo nhé.`,
         });
@@ -1452,8 +1568,8 @@ io.on('connection', (socket: Socket) => {
 
       // Broadcast pinned donate banner + trigger MC AI voice across all clients
       io.emit('chat:donateRequest', alert);
-      // Tell sender their exact cooldown end timestamp
-      socket.emit('chat:requestCooldown', { nextAllowedAt: now + DONATE_REQUEST_COOLDOWN_MS });
+      // Send relative remainingMs so client clock skew never breaks the countdown!
+      socket.emit('chat:requestCooldown', { remainingMs: DONATE_REQUEST_COOLDOWN_MS });
       return;
     }
 
@@ -1655,6 +1771,15 @@ async function prewarmMoodRecommendations(): Promise<void> {
     // ignore prewarm errors
   }
 }
+
+// Global Crash Shield: prevent malformed async errors from taking down the Node.js server
+process.on('uncaughtException', (err) => {
+  console.error('🛡️ [Security Shield] Caught uncaughtException:', err?.message || err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('🛡️ [Security Shield] Caught unhandledRejection:', reason);
+});
 
 httpServer.listen(PORT, () => {
   console.log(`🍵 Tiệm Trà Acoustic Server đang chạy tại http://localhost:${PORT}`);

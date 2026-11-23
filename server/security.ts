@@ -48,11 +48,39 @@ export const JoinProfileSchema = z.object({
   avatar: z.string().min(1).max(16),
 });
 
+/**
+ * Allow-listed safe image hosts for GIFs / Thumbnails to prevent SSRF / tracking pixel / malicious image URL injection
+ */
+const ALLOWED_IMAGE_HOSTS = new Set([
+  'i.ytimg.com',
+  'img.youtube.com',
+  'i9.ytimg.com',
+  'media.giphy.com',
+  'media0.giphy.com',
+  'media1.giphy.com',
+  'media2.giphy.com',
+  'media3.giphy.com',
+  'media4.giphy.com',
+]);
+
+export function isAllowedMediaUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.protocol === 'https:' && ALLOWED_IMAGE_HOSTS.has(parsed.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 export const AddTrackSchema = z.object({
   videoId: z.string().regex(youtubeIdRegex, 'Video ID không hợp lệ'),
   title: z.string().min(1).max(160),
   author: z.string().min(1).max(100),
-  thumbnail: z.string().url().max(350),
+  thumbnail: z
+    .string()
+    .url()
+    .max(350)
+    .refine(isAllowedMediaUrl, 'Nguồn ảnh thumbnail không nằm trong danh sách an toàn'),
   duration: z.number().min(0).max(36000),
   durationText: z.string().min(1).max(20),
   dedicationMessage: z.string().max(140).optional(),
@@ -61,7 +89,12 @@ export const AddTrackSchema = z.object({
 export const ChatMessageSchema = z
   .object({
     content: z.string().max(280).optional().default(''),
-    stickerUrl: z.string().url().max(350).optional(),
+    stickerUrl: z
+      .string()
+      .url()
+      .max(350)
+      .refine(isAllowedMediaUrl, 'Nguồn GIF/Sticker không hợp lệ')
+      .optional(),
     stickerLabel: z.string().max(60).optional(),
     replyTo: z
       .object({
@@ -164,4 +197,95 @@ export class SocketRateLimiter {
       }
     }
   }
+}
+
+/**
+ * IP Shield & Auto-Ban Guard against WebSocket Floods / DDoS / Brute-force Bots
+ */
+export class IpAttackShield {
+  private strikes = new Map<string, { count: number; lastAt: number }>();
+  private bannedUntil = new Map<string, number>();
+  private connectionRate = new Map<string, number[]>();
+
+  public isBanned(ip: string): { banned: boolean; remainingSec: number } {
+    const until = this.bannedUntil.get(ip);
+    if (!until) return { banned: false, remainingSec: 0 };
+    const now = Date.now();
+    if (now >= until) {
+      this.bannedUntil.delete(ip);
+      return { banned: false, remainingSec: 0 };
+    }
+    return { banned: true, remainingSec: Math.ceil((until - now) / 1000) };
+  }
+
+  /**
+   * Checks if an IP is opening sockets too rapidly (e.g., > 25 connections in 30s)
+   */
+  public recordConnectionAttempt(ip: string): boolean {
+    const now = Date.now();
+    const list = (this.connectionRate.get(ip) || []).filter((t) => now - t < 30_000);
+    list.push(now);
+    this.connectionRate.set(ip, list);
+
+    if (list.length > 25) {
+      this.ban(ip, 5 * 60 * 1000); // Auto-ban 5 minutes for connection flood
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Adds a strike for malicious payloads or severe event flooding; auto-bans after 8 strikes
+   */
+  public addStrike(ip: string, weight = 1): boolean {
+    const now = Date.now();
+    const entry = this.strikes.get(ip) || { count: 0, lastAt: now };
+    if (now - entry.lastAt > 60_000) {
+      entry.count = 0;
+    }
+    entry.count += weight;
+    entry.lastAt = now;
+    this.strikes.set(ip, entry);
+
+    if (entry.count >= 8) {
+      this.ban(ip, 5 * 60 * 1000);
+      this.strikes.delete(ip);
+      return true;
+    }
+    return false;
+  }
+
+  public ban(ip: string, durationMs = 5 * 60 * 1000): void {
+    this.bannedUntil.set(ip, Date.now() + durationMs);
+  }
+
+  public cleanup(): void {
+    const now = Date.now();
+    for (const [ip, until] of this.bannedUntil.entries()) {
+      if (now >= until) this.bannedUntil.delete(ip);
+    }
+    for (const [ip, entry] of this.strikes.entries()) {
+      if (now - entry.lastAt > 120_000) this.strikes.delete(ip);
+    }
+    for (const [ip, list] of this.connectionRate.entries()) {
+      const fresh = list.filter((t) => now - t < 30_000);
+      if (fresh.length === 0) this.connectionRate.delete(ip);
+      else this.connectionRate.set(ip, fresh);
+    }
+  }
+}
+
+/**
+ * Bounded LRU Map helper to prevent unbounded RAM exhaustion (OOM DoS)
+ */
+export function setBoundedMap<K, V>(map: Map<K, V>, key: K, value: V, maxEntries: number): void {
+  if (map.has(key)) {
+    map.delete(key);
+  } else if (map.size >= maxEntries) {
+    const oldestKey = map.keys().next().value;
+    if (oldestKey !== undefined) {
+      map.delete(oldestKey);
+    }
+  }
+  map.set(key, value);
 }

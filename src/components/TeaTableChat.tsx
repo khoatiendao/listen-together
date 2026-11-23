@@ -118,18 +118,21 @@ export const TeaTableChat: React.FC = () => {
   const [vibeTab, setVibeTab] = useState<'gif' | 'sticker'>('gif');
   const [cooldownSecLeft, setCooldownSecLeft] = useState(0);
 
-  // Live countdown for 2-minute /request cooldown
+  // Live countdown for 2-minute /request cooldown (runs cleanly down to 0 every 500ms)
   useEffect(() => {
-    if (!donateCooldownUntil || donateCooldownUntil <= Date.now()) {
+    if (!donateCooldownUntil) {
       setCooldownSecLeft(0);
       return;
     }
     const updateLeft = () => {
       const rem = Math.max(0, Math.ceil((donateCooldownUntil - Date.now()) / 1000));
       setCooldownSecLeft(rem);
+      if (rem <= 0) {
+        clearInterval(timer);
+      }
     };
+    const timer = setInterval(updateLeft, 500);
     updateLeft();
-    const timer = setInterval(updateLeft, 1000);
     return () => clearInterval(timer);
   }, [donateCooldownUntil]);
 
@@ -522,12 +525,20 @@ export const TeaTableChat: React.FC = () => {
                 </span>
               </span>
               <span className="text-[10px] text-amber-700/80 dark:text-amber-400/80 shrink-0">
-                {formatTime(latestDonateRequest.createdAt)}
+                Gửi lúc {formatTime(latestDonateRequest.createdAt)}
               </span>
             </div>
             <p className="text-xs sm:text-sm font-semibold text-amber-950 dark:text-amber-100 mt-0.5 leading-snug break-words">
               "{latestDonateRequest.message}"
             </p>
+            {cooldownSecLeft > 0 && latestDonateRequest.clientId === profile?.clientId && (
+              <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-200/80 dark:bg-amber-900/60 text-[10px] font-semibold text-amber-900 dark:text-amber-200">
+                <span>⏳ Hồi chiêu /request:</span>
+                <span>
+                  {Math.floor(cooldownSecLeft / 60)}:{(cooldownSecLeft % 60).toString().padStart(2, '0')}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       )}
