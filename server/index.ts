@@ -488,6 +488,47 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+// AI MC Voice TTS Proxy (Vietnamese natural voice, zero API key, streams MP3 directly to client)
+app.get('/api/tts', searchApiLimiter, async (req, res) => {
+  try {
+    const rawText = String(req.query.text || '').trim();
+    const cleanText = sanitizeText(rawText, 240);
+    if (!cleanText) {
+      res.status(400).json({ error: 'Thiếu nội dung đọc' });
+      return;
+    }
+
+    const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=vi&client=tw-ob&q=${encodeURIComponent(cleanText)}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(ttsUrl, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Referer: 'https://translate.google.com/',
+        },
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`TTS HTTP ${response.status}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.send(buffer);
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (err) {
+    console.error('TTS error:', err);
+    res.status(502).json({ error: 'TTS unavailable' });
+  }
+});
+
 app.get('/api/search', searchApiLimiter, async (req, res) => {
   try {
     const rawQuery = String(req.query.q || '').trim();

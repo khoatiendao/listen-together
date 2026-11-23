@@ -17,8 +17,14 @@ import {
   CheckCircle2,
   XCircle,
   BellRing,
+  Bot,
 } from 'lucide-react';
 import { useRoomStore } from '../store/useRoomStore.ts';
+import {
+  buildTrackAnnouncementScript,
+  speakAiMcAnnouncement,
+  stopAiMcSpeech,
+} from '../utils/aiMcBot.ts';
 
 declare global {
   interface Window {
@@ -56,6 +62,8 @@ export const StagePlayer: React.FC = () => {
   const reactions = useRoomStore((s) => s.reactions);
   const localVolume = useRoomStore((s) => s.localVolume);
   const isLocalMuted = useRoomStore((s) => s.isLocalMuted);
+  const aiMcEnabled = useRoomStore((s) => s.aiMcEnabled);
+  const toggleAiMc = useRoomStore((s) => s.toggleAiMc);
 
   const isHost = Boolean(
     hostControl.hostClientId &&
@@ -87,10 +95,12 @@ export const StagePlayer: React.FC = () => {
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
   const [showMvMode, setShowMvMode] = useState(false);
   const [isDraggingSeek, setIsDraggingSeek] = useState(false);
+  const [aiMcSpeakingText, setAiMcSpeakingText] = useState<string | null>(null);
 
   const playerRef = useRef<any>(null);
   const currentVideoIdRef = useRef<string | null>(null);
   const currentTrackIdRef = useRef<string | null>(null);
+  const lastAnnouncedTrackIdRef = useRef<string | null>(null);
   const lastSeekWallTimeRef = useRef<number>(0);
   const webAudioUnlockDoneRef = useRef<boolean>(false);
 
@@ -294,6 +304,48 @@ export const StagePlayer: React.FC = () => {
       currentVideoIdRef.current = track.videoId;
       currentTrackIdRef.current = track.id;
       lastSeekWallTimeRef.current = Date.now();
+
+      // Trigger AI MC Bot announcement when a newly started track begins (position < 12s)
+      const latestState = useRoomStore.getState();
+      if (
+        latestState.aiMcEnabled &&
+        !latestState.isLocalMuted &&
+        latestState.localVolume > 0 &&
+        targetPos < 12 &&
+        lastAnnouncedTrackIdRef.current !== track.id
+      ) {
+        lastAnnouncedTrackIdRef.current = track.id;
+        const script = buildTrackAnnouncementScript(track.requestedBy, track.dedicationMessage);
+        speakAiMcAnnouncement({
+          script,
+          volume: Math.min(1, (latestState.localVolume / 100) * 1.15),
+          onStart: () => {
+            setAiMcSpeakingText(script);
+            // Smoothly duck background music to 18% while AI MC is speaking
+            try {
+              const curVol = useRoomStore.getState().localVolume;
+              playerRef.current?.setVolume?.(Math.max(8, Math.round(curVol * 0.18)));
+            } catch {
+              // ignore
+            }
+          },
+          onEnd: () => {
+            setAiMcSpeakingText(null);
+            // Restore full music volume smoothly
+            try {
+              const s = useRoomStore.getState();
+              if (!s.isLocalMuted) {
+                playerRef.current?.setVolume?.(s.localVolume);
+              }
+            } catch {
+              // ignore
+            }
+          },
+        });
+      } else {
+        lastAnnouncedTrackIdRef.current = track.id;
+      }
+
       try {
         player.loadVideoById({
           videoId: track.videoId,
@@ -503,6 +555,36 @@ export const StagePlayer: React.FC = () => {
             </button>
           )}
 
+          {/* AI MC Bot Toggle Button */}
+          <button
+            type="button"
+            onClick={() => {
+              if (aiMcEnabled) {
+                stopAiMcSpeech();
+                setAiMcSpeakingText(null);
+                try {
+                  if (!isLocalMuted) playerRef.current?.setVolume?.(localVolume);
+                } catch {
+                  // ignore
+                }
+              }
+              toggleAiMc();
+            }}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
+              aiMcEnabled
+                ? 'bg-matcha-100 dark:bg-emerald-950/80 text-matcha-800 dark:text-emerald-300 border-matcha-300 dark:border-emerald-700'
+                : 'bg-tea-100 dark:bg-zinc-800 text-tea-600 dark:text-zinc-400 border-transparent dark:border-zinc-700'
+            }`}
+            title={
+              aiMcEnabled
+                ? 'Bot MC AI đang BẬT: Tự động đọc tên người order & lời nhắn khi chuyển bài (Bấm để tắt)'
+                : 'Bot MC AI đang TẮT (Bấm để bật giọng đọc lời nhắn)'
+            }
+          >
+            <Bot className="w-3.5 h-3.5" />
+            <span>{aiMcEnabled ? 'MC AI: Bật' : 'MC AI: Tắt'}</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setShowMvMode((v) => !v)}
@@ -566,6 +648,38 @@ export const StagePlayer: React.FC = () => {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* AI MC Speaking Live Indicator Banner */}
+      {aiMcSpeakingText && (
+        <div className="relative z-30 mb-4 p-3 rounded-2xl bg-gradient-to-r from-matcha-100 via-tea-100 to-matcha-100 dark:from-emerald-950/80 dark:via-zinc-800 dark:to-emerald-950/80 border border-matcha-300 dark:border-emerald-700 flex items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center gap-2.5 text-xs sm:text-sm text-matcha-900 dark:text-emerald-200 font-medium">
+            <div className="w-8 h-8 rounded-xl bg-matcha-600 dark:bg-emerald-600 text-white flex items-center justify-center shrink-0 animate-pulse">
+              <Bot className="w-4 h-4" />
+            </div>
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-matcha-700 dark:text-emerald-400 block">
+                🎙️ MC AI Phòng Trà đang phát thanh...
+              </span>
+              <span className="italic">"{aiMcSpeakingText}"</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              stopAiMcSpeech();
+              setAiMcSpeakingText(null);
+              try {
+                if (!isLocalMuted) playerRef.current?.setVolume?.(localVolume);
+              } catch {
+                // ignore
+              }
+            }}
+            className="px-2.5 py-1 rounded-lg bg-white/80 dark:bg-zinc-900 text-xs font-semibold text-tea-700 dark:text-zinc-300 hover:text-rose-600 transition shrink-0"
+          >
+            Dừng đọc
+          </button>
         </div>
       )}
 

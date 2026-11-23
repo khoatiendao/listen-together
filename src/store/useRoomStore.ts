@@ -13,6 +13,17 @@ import {
 
 const PROFILE_STORAGE_KEY = 'tearoom_user_profile_v1';
 const THEME_STORAGE_KEY = 'tearoom_theme_mode_v1';
+const AI_MC_STORAGE_KEY = 'tearoom_ai_mc_enabled_v1';
+
+function loadInitialAiMcEnabled(): boolean {
+  try {
+    const saved = localStorage.getItem(AI_MC_STORAGE_KEY);
+    if (saved === 'false') return false;
+  } catch {
+    // ignore
+  }
+  return true;
+}
 
 function loadInitialTheme(): 'light' | 'dark' {
   try {
@@ -73,6 +84,7 @@ interface RoomStoreState {
 
   localVolume: number;
   isLocalMuted: boolean;
+  aiMcEnabled: boolean;
   theme: 'light' | 'dark';
 
   // Helpers
@@ -82,6 +94,7 @@ interface RoomStoreState {
   // Actions
   initSocket: () => void;
   toggleTheme: () => void;
+  toggleAiMc: () => void;
   saveProfile: (nickname: string, avatar: string) => void;
   setProfileModalOpen: (open: boolean) => void;
   setLocalVolume: (val: number) => void;
@@ -146,7 +159,18 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
 
   localVolume: 80,
   isLocalMuted: false,
+  aiMcEnabled: loadInitialAiMcEnabled(),
   theme: loadInitialTheme(),
+
+  toggleAiMc: () => {
+    const next = !get().aiMcEnabled;
+    try {
+      localStorage.setItem(AI_MC_STORAGE_KEY, String(next));
+    } catch {
+      // ignore
+    }
+    set({ aiMcEnabled: next });
+  },
 
   toggleTheme: () => {
     const nextTheme = get().theme === 'light' ? 'dark' : 'light';
