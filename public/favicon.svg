@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <rect width="64" height="64" rx="16" fill="#437134"/>
+  <!-- Steam waves -->
+  <path d="M24 14C24 11 27 10 27 7" stroke="#E5F0E0" stroke-width="3" stroke-linecap="round"/>
+  <path d="M32 13C32 10 35 9 35 6" stroke="#E5F0E0" stroke-width="3" stroke-linecap="round"/>
+  <path d="M40 14C40 11 43 10 43 7" stroke="#E5F0E0" stroke-width="3" stroke-linecap="round"/>
+  <!-- Cup handle -->
+  <path d="M46 26H50C53.3137 26 56 28.6863 56 32C56 35.3137 53.3137 38 50 38H46" stroke="#FDFBF7" stroke-width="4" stroke-linecap="round"/>
+  <!-- Tea cup body -->
+  <path d="M14 22H46V35C46 43.8366 38.8366 51 30 51C21.1634 51 14 43.8366 14 35V22Z" fill="#FDFBF7"/>
+  <!-- Matcha tea liquid rim -->
+  <path d="M17 25H43V29C43 30.1046 42.1046 31 41 31H19C17.8954 31 17 30.1046 17 29V25Z" fill="#78AB66"/>
+  <!-- Saucer -->
+  <path d="M12 54H48" stroke="#EFE5CE" stroke-width="4" stroke-linecap="round"/>
+</svg>

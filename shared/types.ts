@@ -1,0 +1,87 @@
+export interface UserProfile {
+  clientId: string;
+  nickname: string;
+  avatar: string;
+  isMuted?: boolean;
+  joinedAt?: number;
+}
+
+export interface TrackItem {
+  id: string;
+  videoId: string;
+  title: string;
+  author: string;
+  thumbnail: string;
+  duration: number; // in seconds
+  durationText: string;
+  requestedBy: string;
+  requestedByClientId: string;
+  requestedByAvatar: string;
+  dedicationMessage?: string;
+  createdAt: number;
+  priorityVotes: string[]; // array of clientIds who voted to prioritize this track
+}
+
+export interface PendingHostApproval {
+  id: string;
+  type: 'skip' | 'priority';
+  trackId: string;
+  trackTitle: string;
+  voteCount: number;
+  requiredVotes: number;
+  createdAt: number;
+}
+
+export interface HostControlState {
+  hostClientId: string | null;
+  hostNickname: string | null;
+  hostAvatar: string | null;
+  strictMode: boolean; // Chế độ Cầm Quyền: chỉ chủ phòng được Play/Pause/Tua/Skip/Xóa, thành viên chỉ được thêm nhạc và Vote
+  pendingApprovals: PendingHostApproval[];
+}
+
+export interface PlaybackState {
+  currentTrack: TrackItem | null;
+  isPlaying: boolean;
+  position: number; // in seconds at lastUpdatedAt
+  lastUpdatedAt: number; // server timestamp in ms
+  skipVotes: string[]; // array of clientIds who voted to skip
+}
+
+export interface ChatMessage {
+  id: string;
+  clientId: string;
+  nickname: string;
+  avatar: string;
+  content: string;
+  type: 'user' | 'system' | 'dedication';
+  createdAt: number;
+}
+
+export interface FloatingReaction {
+  id: string;
+  emoji: string;
+  label: string;
+  nickname: string;
+  xOffset: number;
+}
+
+export interface RoomStatePayload {
+  roomName: string;
+  playback: PlaybackState;
+  hostControl: HostControlState;
+  queue: TrackItem[];
+  history: TrackItem[];
+  messages: ChatMessage[];
+  onlineUsers: UserProfile[];
+  serverTime: number;
+}
+
+export interface SearchResultItem {
+  videoId: string;
+  title: string;
+  author: string;
+  thumbnail: string;
+  duration: number;
+  durationText: string;
+}
