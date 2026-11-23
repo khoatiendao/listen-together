@@ -417,10 +417,19 @@ io.on('connection', (socket: Socket) => {
 
     const cleanNickname = sanitizeText(parsed.data.nickname, 26) || 'Khách Thưởng Trà';
     const cleanAvatar = sanitizeText(parsed.data.avatar, 8) || '🍵';
+    const cleanClientId = sanitizeText(parsed.data.clientId, 64);
     const existing = connectedUsers.get(socket.id);
 
+    // Check if this client already had an active tab with a real nickname before updating
+    const alreadyInRoomWithRealName = Array.from(connectedUsers.values()).some(
+      (u) => u.clientId === cleanClientId && u.nickname !== 'Khách Mới'
+    );
+    const previousRealProfile = Array.from(connectedUsers.values()).find(
+      (u) => u.clientId === cleanClientId && u.nickname !== 'Khách Mới'
+    );
+
     const profile: UserProfile = {
-      clientId: sanitizeText(parsed.data.clientId, 64),
+      clientId: cleanClientId,
       nickname: cleanNickname,
       avatar: cleanAvatar,
       isMuted: existing?.isMuted ?? false,
@@ -439,6 +448,20 @@ io.on('connection', (socket: Socket) => {
       hostControl.hostAvatar = profile.avatar;
     } else {
       ensureHostAssigned();
+    }
+
+    // Announce in chat when a user enters the room with their chosen nickname & avatar
+    if (cleanNickname !== 'Khách Mới') {
+      if (!alreadyInRoomWithRealName) {
+        addSystemChatMessage(`👋 ${cleanAvatar} ${cleanNickname} vừa bước vào phòng trà!`);
+      } else if (
+        previousRealProfile &&
+        (previousRealProfile.nickname !== cleanNickname || previousRealProfile.avatar !== cleanAvatar)
+      ) {
+        addSystemChatMessage(
+          `✨ ${previousRealProfile.nickname} đã đổi danh tính thành ${cleanAvatar} ${cleanNickname}!`
+        );
+      }
     }
 
     const statePayload: RoomStatePayload = {
