@@ -106,20 +106,3 @@ npm run build
 npm start
 ```
 Server Node.js sẽ phục vụ luôn cả giao diện React đã build và WebSocket tại: **http://localhost:3001**
-
----
-
-## ☁️ Hướng Dẫn Deploy Lên Render.com
-
-Dự án đã được cấu hình sẵn file `render.yaml` và `.node-version` để deploy chỉ với 1 Web Service duy nhất:
-1. Đẩy source code lên **GitHub** (file `.gitignore` đã loại bỏ sẵn `node_modules`, `dist`, `data`).
-2. Vào **[Render Dashboard](https://dashboard.render.com)** -> Chọn **New +** -> **Web Service** và kết nối tới GitHub repository.
-3. Cấu hình thông số:
-   - **Runtime:** `Node`
-   - **Region:** `Singapore (Southeast Asia)`
-   - **Build Command:** `npm install && npm run build`
-   - **Start Command:** `npm start`
-   - **Environment Variables:**
-     - `NODE_ENV` = `production`
-     - `NODE_VERSION` = `22.14.0`
-4. Bấm **Deploy Web Service** và tận hưởng không gian âm nhạc cùng mọi người!
