@@ -84,4 +84,13 @@ export interface SearchResultItem {
   thumbnail: string;
   duration: number;
   durationText: string;
+  views?: number;
+  trendingBadge?: string;
+}
+
+export interface MoodCategory {
+  id: string;
+  label: string;
+  emoji: string;
+  description: string;
 }

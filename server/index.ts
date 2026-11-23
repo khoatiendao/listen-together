@@ -21,6 +21,7 @@ import {
   ChatMessage,
   FloatingReaction,
   HostControlState,
+  MoodCategory,
   PendingHostApproval,
   PlaybackState,
   RoomStatePayload,
@@ -378,12 +379,210 @@ app.get('/api/search', searchApiLimiter, async (req, res) => {
       thumbnail: v.thumbnail || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
       duration: Number(v.seconds || 0),
       durationText: v.timestamp || '0:00',
+      views: Number(v.views || 0),
     }));
 
     res.json({ results: videos });
   } catch (err) {
     console.error('Search error:', err);
     res.status(500).json({ error: 'Không thể tìm kiếm bài hát lúc này, vui lòng thử lại!' });
+  }
+});
+
+// Curated Mood & Emotion Categories for Trending Track Recommendations
+interface MoodConfig extends MoodCategory {
+  queries: string[];
+  badgeText: string;
+}
+
+const MOOD_CONFIGS: MoodConfig[] = [
+  {
+    id: 'trending',
+    label: 'Đang Thịnh Hành',
+    emoji: '🔥',
+    description: 'Những bản Hit V-Pop đang hoặc từng giữ Top Trending nhiều triệu view',
+    badgeText: 'Top Trending',
+    queries: [
+      'Sơn Tùng M-TP HIEUTHUHAI SOOBIN Hoàng Dũng Official Music Video',
+      'Bích Phương Hòa Minzy MONO Wren Evans تling Official MV',
+      'Anh Trai Say Hi Official MV Top Trending',
+      'Đen Vâu Vũ Karik Andree Right Hand Official MV',
+    ],
+  },
+  {
+    id: 'cafe',
+    label: 'Cafe & Acoustic',
+    emoji: '☕',
+    description: 'Nhạc Acoustic mộc mạc, Indie nhẹ nhàng nhâm nhi tách trà & cà phê',
+    badgeText: 'Acoustic Hot',
+    queries: [
+      'Vũ Hoàng Dũng Chillies Da LAB Cá Hồi Hoang Official MV',
+      'Acoustic Việt Nam triệu view Lê Cát Trọng Lý Nguyên Hà',
+      'Làn Sóng Xanh Acoustic Live Session triệu view',
+      'Ngọt Thịnh Suy T.R.I Phương Ly Acoustic Official',
+    ],
+  },
+  {
+    id: 'vui',
+    label: 'Vui Tươi & Yêu Đời',
+    emoji: '☀️',
+    description: 'Giai điệu tích cực, ngọt ngào, tràn đầy năng lượng tươi sáng',
+    badgeText: 'Triệu View Vui Tươi',
+    queries: [
+      'AMEE Phương Ly Hoàng Thùy Linh MIN Official MV',
+      'Trúc Nhân Rhymastic Low G Tóc Tiên Official MV',
+      'Mặt Trời Của Em Đen Vâu JustaTee BigDaddy Official MV',
+      'Sơn Tùng M-TP Có Chắc Yêu Là Đây Nơi Này Có Anh Official MV',
+    ],
+  },
+  {
+    id: 'buon',
+    label: 'Buồn & Tâm Trạng',
+    emoji: '🌧️',
+    description: 'Những bản Ballad triệu view sâu lắng, da diết chạm tới cảm xúc',
+    badgeText: 'Ballad Triệu View',
+    queries: [
+      'Noo Phước Thịnh Bùi Anh Tuấn Hương Tràm Mr Siro Official MV',
+      'Bằng Kiều Quốc Thiên Trung Quân Idol Erik Đức Phúc Official MV',
+      'Phan Mạnh Quỳnh Hà Anh Tuấn Lê Bảo Bình Quân A.P Official MV',
+      'Hoàng Dũng Vũ सुन्न Nàng Thơ Bước Qua Nhau Official MV',
+    ],
+  },
+  {
+    id: 'taptrung',
+    label: 'Tập Trung Code',
+    emoji: '💻',
+    description: 'Lofi Chill, R&B & Indie êm ái giúp tập trung làm việc không xao nhãng',
+    badgeText: 'Chill & Focus',
+    queries: [
+      'Lofi Girl Chillhop beats to relax study to popular',
+      'Đen Vâu Lối Nhỏ Bài Này Chill Phết Mười Năm Official',
+      'Wren Evans tlinh MCK Obito R&B Chill Official MV',
+      'Ghibli Piano Jazz Cafe BGM million views',
+    ],
+  },
+  {
+    id: 'hoiniem',
+    label: 'Hồi Ức Thanh Xuân',
+    emoji: '🎞️',
+    description: 'Những bản Hit huyền thoại một thời ai nghe cũng thuộc lòng',
+    badgeText: 'Hit Huyền Thoại',
+    queries: [
+      'Mỹ Tâm Tuấn Hưng Ưng Hoàng Phúc Quang Vinh Hit Official',
+      'Sơn Tùng M-TP Cơn Mưa Ngang Qua Em Của Ngày Hôm Qua Official',
+      'Soobin Hoàng Sơn Phía Sau Một Cô Gái Bích Phương Bao Giờ Lấy Chồng',
+      'JustaTee LK Yanbi Tiên Tiên Hoàng Tôn Hit Huyền Thoại',
+    ],
+  },
+  {
+    id: 'remix',
+    label: 'Sôi Động & Quẩy',
+    emoji: '⚡',
+    description: 'Nhạc Vinahouse, EDM, Rap Hip-hop cực cháy đánh tan cơn buồn ngủ',
+    badgeText: 'Trending Sôi Động',
+    queries: [
+      'HIEUTHUHAI HURRYKNG GERDNANG Rap Việt Hit Triệu View',
+      'SOOBIN Binz SpaceSpeakers Touliver Official MV',
+      'Hoàng Thùy Linh See Tình Để Mị Nói Cho Mà Nghe Official MV',
+      'Tóc Tiên Trọng Hiếu MONO Waiting For You Official MV',
+    ],
+  },
+];
+
+function formatViewsLabel(views: number, fallbackBadge: string): string {
+  if (!views || views <= 0) return fallbackBadge;
+  if (views >= 1_000_000) {
+    const m = (views / 1_000_000).toFixed(1).replace(/\.0$/, '');
+    return `🔥 ${m}M lượt xem`;
+  }
+  if (views >= 1_000) {
+    const k = Math.round(views / 1_000);
+    return `🔥 ${k}K lượt xem`;
+  }
+  return fallbackBadge;
+}
+
+const recommendationCache = new Map<string, { timestamp: number; results: SearchResultItem[] }>();
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes cache
+
+app.get('/api/recommendations', searchApiLimiter, async (req, res) => {
+  try {
+    const moodId = sanitizeText(String(req.query.mood || 'trending'), 30);
+    const refresh = req.query.refresh === '1';
+    const mood = MOOD_CONFIGS.find((m) => m.id === moodId) || MOOD_CONFIGS[0];
+
+    // Pick a query (if refresh=1, pick a random query from the mood's query pool for variety)
+    const queryIndex = refresh
+      ? Math.floor(Math.random() * mood.queries.length)
+      : 0;
+    const chosenQuery = mood.queries[queryIndex];
+    const cacheKey = `${mood.id}:${queryIndex}`;
+
+    const cached = recommendationCache.get(cacheKey);
+    if (!refresh && cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      res.json({
+        mood: {
+          id: mood.id,
+          label: mood.label,
+          emoji: mood.emoji,
+          description: mood.description,
+        },
+        categories: MOOD_CONFIGS.map(({ id, label, emoji, description }) => ({
+          id,
+          label,
+          emoji,
+          description,
+        })),
+        results: cached.results,
+      });
+      return;
+    }
+
+    const searchRes = await yts(chosenQuery);
+    const rawVideos = searchRes.videos || [];
+
+    // Filter & sort by view count descending so trending/popular hits always surface at the top
+    const sortedPopular = rawVideos
+      .filter((v) => v.videoId && (v.seconds === 0 || (v.seconds >= 90 && v.seconds <= 7200)))
+      .sort((a, b) => Number(b.views || 0) - Number(a.views || 0))
+      .slice(0, 8)
+      .map((v): SearchResultItem => {
+        const views = Number(v.views || 0);
+        return {
+          videoId: v.videoId,
+          title: sanitizeText(v.title, 150),
+          author: sanitizeText(v.author?.name || 'Trending Artist', 80),
+          thumbnail: v.thumbnail || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
+          duration: Number(v.seconds || 0),
+          durationText: v.timestamp || 'LIVE',
+          views,
+          trendingBadge: formatViewsLabel(views, mood.badgeText),
+        };
+      });
+
+    recommendationCache.set(cacheKey, {
+      timestamp: Date.now(),
+      results: sortedPopular,
+    });
+
+    res.json({
+      mood: {
+        id: mood.id,
+        label: mood.label,
+        emoji: mood.emoji,
+        description: mood.description,
+      },
+      categories: MOOD_CONFIGS.map(({ id, label, emoji, description }) => ({
+        id,
+        label,
+        emoji,
+        description,
+      })),
+      results: sortedPopular,
+    });
+  } catch (err) {
+    console.error('Recommendation error:', err);
+    res.status(500).json({ error: 'Không thể tải danh sách gợi ý lúc này, vui lòng thử lại!' });
   }
 });
 
