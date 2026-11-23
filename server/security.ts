@@ -1,13 +1,13 @@
 import { z } from 'zod';
 
 /**
- * Strips dangerous HTML/script characters & collapses excessive whitespace
+ * Strips dangerous HTML/script characters & control chars (preserving newlines \n for multi-line chat)
  */
 export function sanitizeText(input: string, maxLength = 250): string {
   if (!input || typeof input !== 'string') return '';
   return input
     .replace(/[<>]/g, '') // Remove HTML angle brackets to prevent XSS
-    .replace(/[\u0000-\u001F\u007F]/g, '') // Remove control chars
+    .replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '') // Remove control chars except \n (\u000A)
     .trim()
     .slice(0, maxLength);
 }
@@ -60,6 +60,14 @@ export const AddTrackSchema = z.object({
 
 export const ChatMessageSchema = z.object({
   content: z.string().min(1).max(280),
+  replyTo: z
+    .object({
+      id: z.string().min(1).max(64),
+      nickname: z.string().min(1).max(36),
+      avatar: z.string().min(1).max(16),
+      content: z.string().min(1).max(280),
+    })
+    .optional(),
 });
 
 export const ReactionSchema = z.object({

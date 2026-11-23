@@ -200,10 +200,13 @@ export const StagePlayer: React.FC = () => {
             // and if actual player time is genuinely near the end of the track
             if (event.data === 0 && currentTrackIdRef.current) {
               const sinceLastSeek = Date.now() - lastSeekWallTimeRef.current;
-              const trackDur = state.playback.currentTrack?.duration || 0;
+              const trackDur =
+                state.playback.currentTrack?.duration ||
+                Number(playerRef.current?.getDuration?.() || 0);
               const actualTime = Number(playerRef.current?.getCurrentTime?.() || 0);
               if (
                 sinceLastSeek > 3000 &&
+                actualTime >= 15 &&
                 (trackDur === 0 || actualTime >= Math.max(5, trackDur - 10))
               ) {
                 notifyTrackEnded(currentTrackIdRef.current);

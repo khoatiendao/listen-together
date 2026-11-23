@@ -48,6 +48,13 @@ export interface PlaybackState {
   skipVotes: string[]; // array of clientIds who voted to skip
 }
 
+export interface ChatReplyQuote {
+  id: string;
+  nickname: string;
+  avatar: string;
+  content: string;
+}
+
 export interface ChatMessage {
   id: string;
   clientId: string;
@@ -55,6 +62,7 @@ export interface ChatMessage {
   avatar: string;
   content: string;
   type: 'user' | 'system' | 'dedication';
+  replyTo?: ChatReplyQuote;
   createdAt: number;
 }
 

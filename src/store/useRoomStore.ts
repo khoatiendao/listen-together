@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
 import {
   ChatMessage,
+  ChatReplyQuote,
   FloatingReaction,
   HostControlState,
   PlaybackState,
@@ -109,7 +110,7 @@ interface RoomStoreState {
   voteSkip: () => void;
   forceNext: () => void;
   notifyTrackEnded: (trackId: string) => void;
-  sendChatMessage: (content: string) => void;
+  sendChatMessage: (content: string, replyTo?: ChatReplyQuote) => void;
   sendReaction: (emoji: string, label: string) => void;
   getSyncedPlaybackPosition: () => number;
 }
@@ -380,8 +381,8 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
     get().socket?.emit('playback:ended', trackId);
   },
 
-  sendChatMessage: (content) => {
-    get().socket?.emit('chat:send', { content });
+  sendChatMessage: (content, replyTo) => {
+    get().socket?.emit('chat:send', { content, replyTo });
   },
 
   sendReaction: (emoji, label) => {

@@ -54,6 +54,7 @@ db.exec(`
     avatar TEXT NOT NULL,
     content TEXT NOT NULL,
     type TEXT NOT NULL,
+    replyToJson TEXT,
     createdAt INTEGER NOT NULL
   );
 
@@ -62,6 +63,13 @@ db.exec(`
     value TEXT NOT NULL
   );
 `);
+
+// Safe migration if chat_messages table already existed without replyToJson
+try {
+  db.exec('ALTER TABLE chat_messages ADD COLUMN replyToJson TEXT');
+} catch {
+  // column already exists
+}
 
 export const dbService = {
   getQueue(): TrackItem[] {
@@ -177,10 +185,19 @@ export const dbService = {
 
   addChatMessage(msg: ChatMessage): void {
     const stmt = db.prepare(`
-      INSERT INTO chat_messages (id, clientId, nickname, avatar, content, type, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO chat_messages (id, clientId, nickname, avatar, content, type, replyToJson, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    stmt.run(msg.id, msg.clientId, msg.nickname, msg.avatar, msg.content, msg.type, msg.createdAt);
+    stmt.run(
+      msg.id,
+      msg.clientId,
+      msg.nickname,
+      msg.avatar,
+      msg.content,
+      msg.type,
+      msg.replyTo ? JSON.stringify(msg.replyTo) : null,
+      msg.createdAt
+    );
 
     // Keep last 100 chat messages
     db.prepare(`
@@ -194,15 +211,26 @@ export const dbService = {
     const stmt = db.prepare('SELECT * FROM chat_messages ORDER BY createdAt DESC LIMIT 80');
     const rows = stmt.all() as Record<string, unknown>[];
     return rows
-      .map((r) => ({
-        id: String(r.id),
-        clientId: String(r.clientId),
-        nickname: String(r.nickname),
-        avatar: String(r.avatar),
-        content: String(r.content),
-        type: (r.type as ChatMessage['type']) || 'user',
-        createdAt: Number(r.createdAt),
-      }))
+      .map((r) => {
+        let replyTo: ChatMessage['replyTo'] = undefined;
+        if (r.replyToJson) {
+          try {
+            replyTo = JSON.parse(String(r.replyToJson));
+          } catch {
+            replyTo = undefined;
+          }
+        }
+        return {
+          id: String(r.id),
+          clientId: String(r.clientId),
+          nickname: String(r.nickname),
+          avatar: String(r.avatar),
+          content: String(r.content),
+          type: (r.type as ChatMessage['type']) || 'user',
+          replyTo,
+          createdAt: Number(r.createdAt),
+        };
+      })
       .reverse();
   },
 

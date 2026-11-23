@@ -272,11 +272,18 @@ const queueLimiter = new SocketRateLimiter(3, 10000, 15000);
 const controlLimiter = new SocketRateLimiter(8, 5000, 10000);
 const reactionLimiter = new SocketRateLimiter(6, 4000, 5000);
 
+// Clean up expired entries in recentlySeenClients so memory stays small
 setInterval(() => {
   chatLimiter.cleanup();
   queueLimiter.cleanup();
   controlLimiter.cleanup();
   reactionLimiter.cleanup();
+  const now = Date.now();
+  for (const [cid, info] of recentlySeenClients.entries()) {
+    if (now - info.lastSeenAt > RECONNECT_GRACE_PERIOD_MS * 2) {
+      recentlySeenClients.delete(cid);
+    }
+  }
 }, 60000);
 
 const connectedUsers = new Map<string, UserProfile>();
@@ -1287,13 +1294,16 @@ io.on('connection', (socket: Socket) => {
     if (!playback.currentTrack || playback.currentTrack.id !== endedTrackId) return;
 
     // Guard against premature/spurious 'ended' events from newly joined clients or YouTube seek glitches:
-    // If the track has a known duration (> 0), only allow natural ending if we are within 10 seconds of the end!
     const currentPos = getComputedPosition();
-    if (
-      playback.currentTrack.duration > 0 &&
-      currentPos < Math.max(5, playback.currentTrack.duration - 10)
-    ) {
-      return;
+    if (playback.currentTrack.duration > 0) {
+      if (currentPos < Math.max(5, playback.currentTrack.duration - 10)) {
+        return;
+      }
+    } else {
+      // For tracks with unknown duration (0), never allow an 'ended' event within the first 25 seconds of playback
+      if (currentPos < 25) {
+        return;
+      }
     }
 
     advanceToNextTrack();
@@ -1318,6 +1328,15 @@ io.on('connection', (socket: Socket) => {
     const cleanContent = sanitizeText(parsed.data.content, 260);
     if (!cleanContent) return;
 
+    const cleanReplyTo = parsed.data.replyTo
+      ? {
+          id: sanitizeText(parsed.data.replyTo.id, 64),
+          nickname: sanitizeText(parsed.data.replyTo.nickname, 32),
+          avatar: sanitizeText(parsed.data.replyTo.avatar, 8),
+          content: sanitizeText(parsed.data.replyTo.content, 160),
+        }
+      : undefined;
+
     const msg: ChatMessage = {
       id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       clientId: user.clientId,
@@ -1325,6 +1344,7 @@ io.on('connection', (socket: Socket) => {
       avatar: user.avatar,
       content: cleanContent,
       type: 'user',
+      replyTo: cleanReplyTo,
       createdAt: Date.now(),
     };
 
