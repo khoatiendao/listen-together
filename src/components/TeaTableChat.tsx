@@ -27,11 +27,6 @@ export const TeaTableChat: React.FC = () => {
 
   const [text, setText] = useState('');
   const [showGuests, setShowGuests] = useState(false);
-  const chatBottomRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -198,7 +193,6 @@ export const TeaTableChat: React.FC = () => {
             );
           })
         )}
-        <div ref={chatBottomRef} />
       </div>
 
       {/* Chat Input */}

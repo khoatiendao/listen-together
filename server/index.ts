@@ -54,11 +54,11 @@ const searchApiLimiter = rateLimit({
   message: { error: 'Bạn tìm kiếm quá nhanh, vui lòng đợi vài giây nhé!' },
 });
 
-// 2. Socket.io Server
+// 2. Socket.io Server (Generous pingTimeout so background tabs & cloud proxies never cause false disconnect/reconnect storms)
 const io = new Server(httpServer, {
   maxHttpBufferSize: 32 * 1024,
-  pingInterval: 10000,
-  pingTimeout: 8000,
+  pingInterval: 25000,
+  pingTimeout: 60000,
   cors: {
     origin: '*',
     methods: ['GET', 'POST'],
@@ -281,7 +281,10 @@ setInterval(() => {
 
 const connectedUsers = new Map<string, UserProfile>();
 const ipConnectionCount = new Map<string, number>();
-const MAX_CONNECTIONS_PER_IP = 15;
+// Track recently seen clients (clientId -> lastSeenTimestamp) so temporary socket reconnects don't re-announce "vừa bước vào phòng trà!"
+const recentlySeenClients = new Map<string, { nickname: string; avatar: string; lastSeenAt: number }>();
+const RECONNECT_GRACE_PERIOD_MS = 10 * 60 * 1000; // 10 minutes grace window
+const MAX_CONNECTIONS_PER_IP = 25;
 const MAX_QUEUE_LENGTH = 50;
 
 function getUniqueOnlineUsers(): UserProfile[] {
@@ -772,18 +775,29 @@ io.on('connection', (socket: Socket) => {
       ensureHostAssigned();
     }
 
-    // Announce in chat when a user enters the room with their chosen nickname & avatar
+    // Announce in chat ONLY when a genuinely new user enters (or after > 10 mins offline), or when they change their name/avatar
     if (cleanNickname !== 'Khách Mới') {
-      if (!alreadyInRoomWithRealName) {
+      const recentInfo = recentlySeenClients.get(cleanClientId);
+      const isWithinGraceWindow =
+        recentInfo && Date.now() - recentInfo.lastSeenAt < RECONNECT_GRACE_PERIOD_MS;
+
+      if (!alreadyInRoomWithRealName && !isWithinGraceWindow) {
         addSystemChatMessage(`👋 ${cleanAvatar} ${cleanNickname} vừa bước vào phòng trà!`);
-      } else if (
-        previousRealProfile &&
-        (previousRealProfile.nickname !== cleanNickname || previousRealProfile.avatar !== cleanAvatar)
-      ) {
-        addSystemChatMessage(
-          `✨ ${previousRealProfile.nickname} đã đổi danh tính thành ${cleanAvatar} ${cleanNickname}!`
-        );
+      } else {
+        const prevName = previousRealProfile?.nickname || recentInfo?.nickname;
+        const prevAvatar = previousRealProfile?.avatar || recentInfo?.avatar;
+        if (prevName && (prevName !== cleanNickname || prevAvatar !== cleanAvatar)) {
+          addSystemChatMessage(
+            `✨ ${prevName} đã đổi danh tính thành ${cleanAvatar} ${cleanNickname}!`
+          );
+        }
       }
+
+      recentlySeenClients.set(cleanClientId, {
+        nickname: cleanNickname,
+        avatar: cleanAvatar,
+        lastSeenAt: Date.now(),
+      });
     }
 
     const statePayload: RoomStatePayload = {
@@ -1344,6 +1358,13 @@ io.on('connection', (socket: Socket) => {
 
   socket.on('disconnect', () => {
     const disconnectedUser = connectedUsers.get(socket.id);
+    if (disconnectedUser && disconnectedUser.nickname !== 'Khách Mới') {
+      recentlySeenClients.set(disconnectedUser.clientId, {
+        nickname: disconnectedUser.nickname,
+        avatar: disconnectedUser.avatar,
+        lastSeenAt: Date.now(),
+      });
+    }
     connectedUsers.delete(socket.id);
     const count = ipConnectionCount.get(clientIp) || 1;
     if (count <= 1) {
