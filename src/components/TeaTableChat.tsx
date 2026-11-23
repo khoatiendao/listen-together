@@ -52,11 +52,19 @@ export const TeaTableChat: React.FC = () => {
   const [selectedMentionIdx, setSelectedMentionIdx] = useState<number>(0);
 
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastSubmittedAtRef = useRef<number>(0);
 
   const adjustTextareaHeight = (el: HTMLTextAreaElement | null) => {
     if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 112)}px`;
+    if (!el.value) {
+      el.style.height = '40px';
+      el.style.overflowY = 'hidden';
+      return;
+    }
+    el.style.height = '40px';
+    const nextHeight = Math.min(Math.max(el.scrollHeight, 40), 116);
+    el.style.height = `${nextHeight}px`;
+    el.style.overflowY = el.scrollHeight > 116 ? 'auto' : 'hidden';
   };
 
   // Build list of known nicknames (from online users + recent messages) for @mention highlighting & autocomplete
@@ -98,6 +106,14 @@ export const TeaTableChat: React.FC = () => {
   }, [onlineUsers, messages]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    // Swallow trailing macOS Vietnamese IME composition commit that fires within 80ms after hitting Enter
+    if (Date.now() - lastSubmittedAtRef.current < 80) {
+      e.target.value = '';
+      setText('');
+      adjustTextareaHeight(e.target);
+      return;
+    }
+
     const val = e.target.value;
     setText(val);
     adjustTextareaHeight(e.target);
@@ -172,13 +188,32 @@ export const TeaTableChat: React.FC = () => {
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!text.trim()) return;
-    sendChatMessage(text.trim(), replyingTo || undefined);
+    // Prevent duplicate submit within 120ms (e.g. macOS IME firing two Enter keydowns)
+    if (Date.now() - lastSubmittedAtRef.current < 120) {
+      if (inputRef.current) {
+        inputRef.current.value = '';
+      }
+      setText('');
+      return;
+    }
+
+    const currentVal = (inputRef.current ? inputRef.current.value : text).trim();
+    if (!currentVal) return;
+
+    lastSubmittedAtRef.current = Date.now();
+    sendChatMessage(currentVal, replyingTo || undefined);
+
     setText('');
     setReplyingTo(null);
     setMentionQuery(null);
+
     if (inputRef.current) {
-      inputRef.current.style.height = 'auto';
+      // Blur & refocus immediately to flush macOS Vietnamese IME underline buffer ("đi", "rồi", etc.)
+      inputRef.current.value = '';
+      inputRef.current.blur();
+      inputRef.current.focus();
+      inputRef.current.style.height = '40px';
+      inputRef.current.style.overflowY = 'hidden';
     }
   };
 
@@ -589,16 +624,17 @@ export const TeaTableChat: React.FC = () => {
           }}
           placeholder={
             replyingTo
-              ? `Nhập câu trả lời cho ${replyingTo.nickname} (Gõ @ để tag)...`
-              : 'Nhâm nhi tách trà và nhắn đôi lời (Gõ @ để tag tên)...'
+              ? `Trả lời ${replyingTo.nickname}...`
+              : 'Nhâm nhi tách trà, nhắn đôi lời...'
           }
           maxLength={260}
-          className="flex-1 px-4 py-2.5 rounded-2xl bg-white dark:bg-zinc-800 border border-tea-200 dark:border-zinc-700 text-xs sm:text-sm text-tea-900 dark:text-zinc-100 placeholder-tea-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-matcha-500 dark:focus:ring-emerald-500 transition resize-none overflow-y-auto leading-relaxed max-h-28"
+          style={{ height: '40px', overflowY: 'hidden' }}
+          className="flex-1 px-4 py-2 rounded-2xl bg-white dark:bg-zinc-800 border border-tea-200 dark:border-zinc-700 text-xs sm:text-sm text-tea-900 dark:text-zinc-100 placeholder-tea-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-matcha-500 dark:focus:ring-emerald-500 transition-[border,box-shadow] resize-none leading-5 min-h-[40px] max-h-[116px]"
         />
         <button
           type="submit"
           disabled={!text.trim()}
-          className="p-2.5 rounded-2xl bg-matcha-600 dark:bg-emerald-600 hover:bg-matcha-700 dark:hover:bg-emerald-500 disabled:opacity-40 text-white shadow-sm transition shrink-0 mb-0.5"
+          className="h-10 w-10 rounded-2xl bg-matcha-600 dark:bg-emerald-600 hover:bg-matcha-700 dark:hover:bg-emerald-500 disabled:opacity-40 text-white shadow-sm transition flex items-center justify-center shrink-0"
           title="Gửi tin nhắn (Enter)"
         >
           <Send className="w-4 h-4" />
