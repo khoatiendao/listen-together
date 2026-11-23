@@ -37,6 +37,7 @@ export interface HostControlState {
   hostNickname: string | null;
   hostAvatar: string | null;
   strictMode: boolean; // Chế độ Cầm Quyền: chỉ chủ phòng được Play/Pause/Tua/Skip/Xóa, thành viên chỉ được thêm nhạc và Vote
+  aiMcEnabled: boolean; // Trạng thái MC AI của phòng (Khi bật Cầm Quyền + bật MC AI, thành viên không thể tắt)
   pendingApprovals: PendingHostApproval[];
 }
 
@@ -55,6 +56,12 @@ export interface ChatReplyQuote {
   content: string;
 }
 
+export interface ChatSeenUser {
+  clientId: string;
+  nickname: string;
+  avatar: string;
+}
+
 export interface ChatMessage {
   id: string;
   clientId: string;
@@ -62,7 +69,11 @@ export interface ChatMessage {
   avatar: string;
   content: string;
   type: 'user' | 'system' | 'dedication';
+  stickerUrl?: string;
+  stickerLabel?: string;
   replyTo?: ChatReplyQuote;
+  reactions?: Record<string, string[]>; // emoji -> array of nicknames who reacted
+  seenBy?: ChatSeenUser[];
   createdAt: number;
 }
 
@@ -74,10 +85,20 @@ export interface FloatingReaction {
   xOffset: number;
 }
 
+export interface DonateRequestAlert {
+  id: string;
+  clientId: string;
+  nickname: string;
+  avatar: string;
+  message: string;
+  createdAt: number;
+}
+
 export interface RoomStatePayload {
   roomName: string;
   playback: PlaybackState;
   hostControl: HostControlState;
+  latestDonateRequest: DonateRequestAlert | null;
   queue: TrackItem[];
   history: TrackItem[];
   messages: ChatMessage[];

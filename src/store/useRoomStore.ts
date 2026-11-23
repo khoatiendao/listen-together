@@ -3,6 +3,8 @@ import { io, Socket } from 'socket.io-client';
 import {
   ChatMessage,
   ChatReplyQuote,
+  ChatSeenUser,
+  DonateRequestAlert,
   FloatingReaction,
   HostControlState,
   PlaybackState,
@@ -75,6 +77,9 @@ interface RoomStoreState {
   roomName: string;
   playback: PlaybackState;
   hostControl: HostControlState;
+  latestDonateRequest: DonateRequestAlert | null;
+  activeDonateEvent: DonateRequestAlert | null; // Live newly arrived donate request to trigger MC AI voice
+  donateCooldownUntil: number; // client timestamp in ms
   queue: TrackItem[];
   history: TrackItem[];
   messages: ChatMessage[];
@@ -103,6 +108,7 @@ interface RoomStoreState {
 
   // Socket Emitters
   toggleStrictMode: () => void;
+  toggleRoomAiMc: () => void;
   transferHost: (targetClientId: string) => void;
   claimHost: () => void;
   resolveHostApproval: (approvalId: string, approved: boolean) => void;
@@ -123,7 +129,13 @@ interface RoomStoreState {
   voteSkip: () => void;
   forceNext: () => void;
   notifyTrackEnded: (trackId: string) => void;
-  sendChatMessage: (content: string, replyTo?: ChatReplyQuote) => void;
+  sendChatMessage: (
+    content: string,
+    replyTo?: ChatReplyQuote,
+    sticker?: { url: string; label: string }
+  ) => void;
+  reactToChatMessage: (messageId: string, emoji: string) => void;
+  markMessageAsSeen: (messageId: string) => void;
   sendReaction: (emoji: string, label: string) => void;
   getSyncedPlaybackPosition: () => number;
 }
@@ -148,8 +160,12 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
     hostNickname: null,
     hostAvatar: null,
     strictMode: false,
+    aiMcEnabled: true,
     pendingApprovals: [],
   },
+  latestDonateRequest: null,
+  activeDonateEvent: null,
+  donateCooldownUntil: 0,
   queue: [],
   history: [],
   messages: [],
@@ -244,6 +260,7 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
         roomName: payload.roomName,
         playback: payload.playback,
         hostControl: payload.hostControl,
+        latestDonateRequest: payload.latestDonateRequest ?? null,
         queue: payload.queue,
         history: payload.history,
         messages: payload.messages,
@@ -298,6 +315,39 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
       set((state) => ({
         messages: [...state.messages.slice(-99), msg],
       }));
+    });
+
+    socket.on(
+      'chat:reactionsUpdated',
+      (payload: { messageId: string; reactions: Record<string, string[]> }) => {
+        set((state) => ({
+          messages: state.messages.map((m) =>
+            m.id === payload.messageId ? { ...m, reactions: payload.reactions } : m
+          ),
+        }));
+      }
+    );
+
+    socket.on(
+      'chat:seenUpdated',
+      (payload: { messageId: string; seenBy: ChatSeenUser[] }) => {
+        set((state) => ({
+          messages: state.messages.map((m) =>
+            m.id === payload.messageId ? { ...m, seenBy: payload.seenBy } : m
+          ),
+        }));
+      }
+    );
+
+    socket.on('chat:donateRequest', (alert: DonateRequestAlert) => {
+      set({
+        latestDonateRequest: alert,
+        activeDonateEvent: alert,
+      });
+    });
+
+    socket.on('chat:requestCooldown', (data: { nextAllowedAt: number }) => {
+      set({ donateCooldownUntil: data.nextAllowedAt });
     });
 
     socket.on('reaction:new', (reaction: FloatingReaction) => {
@@ -357,6 +407,10 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
     get().socket?.emit('host:toggleStrictMode');
   },
 
+  toggleRoomAiMc: () => {
+    get().socket?.emit('host:toggleAiMc');
+  },
+
   transferHost: (targetClientId) => {
     get().socket?.emit('host:transfer', targetClientId);
   },
@@ -405,8 +459,21 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
     get().socket?.emit('playback:ended', trackId);
   },
 
-  sendChatMessage: (content, replyTo) => {
-    get().socket?.emit('chat:send', { content, replyTo });
+  sendChatMessage: (content, replyTo, sticker) => {
+    get().socket?.emit('chat:send', {
+      content,
+      replyTo,
+      stickerUrl: sticker?.url,
+      stickerLabel: sticker?.label,
+    });
+  },
+
+  reactToChatMessage: (messageId, emoji) => {
+    get().socket?.emit('chat:react', { messageId, emoji });
+  },
+
+  markMessageAsSeen: (messageId) => {
+    get().socket?.emit('chat:seen', { messageId });
   },
 
   sendReaction: (emoji, label) => {

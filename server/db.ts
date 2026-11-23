@@ -55,6 +55,10 @@ db.exec(`
     content TEXT NOT NULL,
     type TEXT NOT NULL,
     replyToJson TEXT,
+    stickerUrl TEXT,
+    stickerLabel TEXT,
+    reactionsJson TEXT,
+    seenByJson TEXT,
     createdAt INTEGER NOT NULL
   );
 
@@ -64,11 +68,13 @@ db.exec(`
   );
 `);
 
-// Safe migration if chat_messages table already existed without replyToJson
-try {
-  db.exec('ALTER TABLE chat_messages ADD COLUMN replyToJson TEXT');
-} catch {
-  // column already exists
+// Safe migrations if chat_messages table already existed
+for (const col of ['replyToJson', 'stickerUrl', 'stickerLabel', 'reactionsJson', 'seenByJson']) {
+  try {
+    db.exec(`ALTER TABLE chat_messages ADD COLUMN ${col} TEXT`);
+  } catch {
+    // column already exists
+  }
 }
 
 export const dbService = {
@@ -185,8 +191,10 @@ export const dbService = {
 
   addChatMessage(msg: ChatMessage): void {
     const stmt = db.prepare(`
-      INSERT INTO chat_messages (id, clientId, nickname, avatar, content, type, replyToJson, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO chat_messages (
+        id, clientId, nickname, avatar, content, type, replyToJson, stickerUrl, stickerLabel, reactionsJson, seenByJson, createdAt
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       msg.id,
@@ -196,6 +204,10 @@ export const dbService = {
       msg.content,
       msg.type,
       msg.replyTo ? JSON.stringify(msg.replyTo) : null,
+      msg.stickerUrl ?? null,
+      msg.stickerLabel ?? null,
+      msg.reactions ? JSON.stringify(msg.reactions) : null,
+      msg.seenBy ? JSON.stringify(msg.seenBy) : null,
       msg.createdAt
     );
 
@@ -207,30 +219,75 @@ export const dbService = {
     `).run();
   },
 
+  updateChatReactions(messageId: string, reactions: Record<string, string[]>): void {
+    db.prepare('UPDATE chat_messages SET reactionsJson = ? WHERE id = ?').run(
+      JSON.stringify(reactions),
+      messageId
+    );
+  },
+
+  updateChatSeenBy(messageId: string, seenBy: ChatMessage['seenBy']): void {
+    db.prepare('UPDATE chat_messages SET seenByJson = ? WHERE id = ?').run(
+      JSON.stringify(seenBy || []),
+      messageId
+    );
+  },
+
+  getChatMessageById(messageId: string): ChatMessage | null {
+    const r = db.prepare('SELECT * FROM chat_messages WHERE id = ?').get(messageId) as
+      | Record<string, unknown>
+      | undefined;
+    if (!r) return null;
+    const parseJson = <T>(val: unknown): T | undefined => {
+      if (!val) return undefined;
+      try {
+        return JSON.parse(String(val)) as T;
+      } catch {
+        return undefined;
+      }
+    };
+    return {
+      id: String(r.id),
+      clientId: String(r.clientId),
+      nickname: String(r.nickname),
+      avatar: String(r.avatar),
+      content: String(r.content),
+      type: (r.type as ChatMessage['type']) || 'user',
+      replyTo: parseJson<ChatMessage['replyTo']>(r.replyToJson),
+      stickerUrl: r.stickerUrl ? String(r.stickerUrl) : undefined,
+      stickerLabel: r.stickerLabel ? String(r.stickerLabel) : undefined,
+      reactions: parseJson<Record<string, string[]>>(r.reactionsJson) || {},
+      seenBy: parseJson<ChatMessage['seenBy']>(r.seenByJson) || [],
+      createdAt: Number(r.createdAt),
+    };
+  },
+
   getRecentMessages(): ChatMessage[] {
     const stmt = db.prepare('SELECT * FROM chat_messages ORDER BY createdAt DESC LIMIT 80');
     const rows = stmt.all() as Record<string, unknown>[];
+    const parseJson = <T>(val: unknown): T | undefined => {
+      if (!val) return undefined;
+      try {
+        return JSON.parse(String(val)) as T;
+      } catch {
+        return undefined;
+      }
+    };
     return rows
-      .map((r) => {
-        let replyTo: ChatMessage['replyTo'] = undefined;
-        if (r.replyToJson) {
-          try {
-            replyTo = JSON.parse(String(r.replyToJson));
-          } catch {
-            replyTo = undefined;
-          }
-        }
-        return {
-          id: String(r.id),
-          clientId: String(r.clientId),
-          nickname: String(r.nickname),
-          avatar: String(r.avatar),
-          content: String(r.content),
-          type: (r.type as ChatMessage['type']) || 'user',
-          replyTo,
-          createdAt: Number(r.createdAt),
-        };
-      })
+      .map((r) => ({
+        id: String(r.id),
+        clientId: String(r.clientId),
+        nickname: String(r.nickname),
+        avatar: String(r.avatar),
+        content: String(r.content),
+        type: (r.type as ChatMessage['type']) || 'user',
+        replyTo: parseJson<ChatMessage['replyTo']>(r.replyToJson),
+        stickerUrl: r.stickerUrl ? String(r.stickerUrl) : undefined,
+        stickerLabel: r.stickerLabel ? String(r.stickerLabel) : undefined,
+        reactions: parseJson<Record<string, string[]>>(r.reactionsJson) || {},
+        seenBy: parseJson<ChatMessage['seenBy']>(r.seenByJson) || [],
+        createdAt: Number(r.createdAt),
+      }))
       .reverse();
   },
 

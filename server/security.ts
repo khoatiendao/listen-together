@@ -58,16 +58,31 @@ export const AddTrackSchema = z.object({
   dedicationMessage: z.string().max(140).optional(),
 });
 
-export const ChatMessageSchema = z.object({
-  content: z.string().min(1).max(280),
-  replyTo: z
-    .object({
-      id: z.string().min(1).max(64),
-      nickname: z.string().min(1).max(36),
-      avatar: z.string().min(1).max(16),
-      content: z.string().min(1).max(280),
-    })
-    .optional(),
+export const ChatMessageSchema = z
+  .object({
+    content: z.string().max(280).optional().default(''),
+    stickerUrl: z.string().url().max(350).optional(),
+    stickerLabel: z.string().max(60).optional(),
+    replyTo: z
+      .object({
+        id: z.string().min(1).max(64),
+        nickname: z.string().min(1).max(36),
+        avatar: z.string().min(1).max(16),
+        content: z.string().min(1).max(280),
+      })
+      .optional(),
+  })
+  .refine((data) => Boolean((data.content && data.content.trim().length > 0) || data.stickerUrl), {
+    message: 'Tin nhắn hoặc sticker không được để trống',
+  });
+
+export const ChatReactSchema = z.object({
+  messageId: z.string().min(1).max(64),
+  emoji: z.string().min(1).max(12),
+});
+
+export const ChatSeenSchema = z.object({
+  messageId: z.string().min(1).max(64),
 });
 
 export const ReactionSchema = z.object({

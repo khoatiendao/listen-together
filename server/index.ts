@@ -10,6 +10,8 @@ import { dbService } from './db.ts';
 import {
   AddTrackSchema,
   ChatMessageSchema,
+  ChatReactSchema,
+  ChatSeenSchema,
   extractYouTubeId,
   JoinProfileSchema,
   ReactionSchema,
@@ -19,6 +21,7 @@ import {
 } from './security.ts';
 import {
   ChatMessage,
+  DonateRequestAlert,
   FloatingReaction,
   HostControlState,
   MoodCategory,
@@ -146,11 +149,13 @@ const playback: PlaybackState = {
 
 // Host & Governance (Chế độ Cầm Quyền) State
 const savedStrictMode = dbService.getMeta('strictMode') === 'true';
+const savedAiMcEnabled = dbService.getMeta('aiMcEnabled') !== 'false';
 const hostControl: HostControlState = {
   hostClientId: null,
   hostNickname: null,
   hostAvatar: null,
   strictMode: savedStrictMode,
+  aiMcEnabled: savedAiMcEnabled,
   pendingApprovals: [],
 };
 
@@ -271,6 +276,11 @@ const chatLimiter = new SocketRateLimiter(4, 6000, 20000);
 const queueLimiter = new SocketRateLimiter(3, 10000, 15000);
 const controlLimiter = new SocketRateLimiter(8, 5000, 10000);
 const reactionLimiter = new SocketRateLimiter(6, 4000, 5000);
+
+// Strict 2-minute (120,000ms) cooldown per user for /request [lời nhắn] Donate Voice Shoutout
+const donateRequestCooldownMap = new Map<string, number>(); // clientId -> lastUsedTimestamp
+const DONATE_REQUEST_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes
+let latestDonateRequest: DonateRequestAlert | null = null;
 
 // Clean up expired entries in recentlySeenClients so memory stays small
 setInterval(() => {
@@ -852,6 +862,7 @@ io.on('connection', (socket: Socket) => {
       roomName: 'Tiệm Trà Acoustic & Chill',
       playback: getEffectivePlaybackSnapshot(),
       hostControl,
+      latestDonateRequest,
       queue: getEnrichedQueue(),
       history: dbService.getHistory(),
       messages: dbService.getRecentMessages(),
@@ -886,6 +897,29 @@ io.on('connection', (socket: Socket) => {
         `🌿 Chủ phòng ${user.nickname} đã TẮT "Chế Độ Cầm Quyền": Mọi người đều có thể tự do điều khiển nhạc.`
       );
     }
+
+    broadcastQueueAndMetaUpdate();
+  });
+
+  socket.on('host:toggleAiMc', () => {
+    const user = connectedUsers.get(socket.id);
+    if (!user) return;
+
+    if (!isUserHost(user)) {
+      socket.emit('security:warning', {
+        message: '🔒 Đang ở Chế Độ Cầm Quyền: Chỉ Chủ Phòng mới có quyền bật/tắt MC AI cho cả phòng!',
+      });
+      return;
+    }
+
+    hostControl.aiMcEnabled = !hostControl.aiMcEnabled;
+    dbService.setMeta('aiMcEnabled', String(hostControl.aiMcEnabled));
+
+    addSystemChatMessage(
+      hostControl.aiMcEnabled
+        ? `🎙️ Chủ phòng ${user.nickname} đã BẬT MC AI phát thanh cho cả phòng trà!`
+        : `🔇 Chủ phòng ${user.nickname} đã TẮT MC AI phát thanh của phòng trà.`
+    );
 
     broadcastQueueAndMetaUpdate();
   });
@@ -1366,8 +1400,62 @@ io.on('connection', (socket: Socket) => {
     const parsed = ChatMessageSchema.safeParse(rawPayload);
     if (!parsed.success) return;
 
-    const cleanContent = sanitizeText(parsed.data.content, 260);
-    if (!cleanContent) return;
+    const cleanContent = sanitizeText(parsed.data.content || '', 260);
+    const cleanStickerUrl = parsed.data.stickerUrl ? parsed.data.stickerUrl.trim() : undefined;
+    const cleanStickerLabel = parsed.data.stickerLabel
+      ? sanitizeText(parsed.data.stickerLabel, 50)
+      : undefined;
+
+    if (!cleanContent && !cleanStickerUrl) return;
+
+    // Intercept "/request [lời nhắn]" -> Streamer Donate Shoutout + MC AI Voice + 2-Minute Cooldown!
+    if (/^\/request\b/i.test(cleanContent)) {
+      const shoutoutMsg = cleanContent.replace(/^\/request\b\s*/i, '').trim().slice(0, 180);
+      if (!shoutoutMsg) {
+        socket.emit('security:warning', {
+          message: '💡 Cú pháp: /request [lời nhắn của bạn] (VD: /request Chúc anh em chiều nay hết bug nhé!)',
+        });
+        return;
+      }
+
+      const now = Date.now();
+      const lastUsed = donateRequestCooldownMap.get(user.clientId) || 0;
+      const elapsed = now - lastUsed;
+      if (elapsed < DONATE_REQUEST_COOLDOWN_MS) {
+        const remainingSec = Math.ceil((DONATE_REQUEST_COOLDOWN_MS - elapsed) / 1000);
+        const mins = Math.floor(remainingSec / 60);
+        const secs = remainingSec % 60;
+        const timeStr = mins > 0 ? `${mins} phút ${secs} giây` : `${secs} giây`;
+        socket.emit('security:warning', {
+          message: `⏳ Bạn vừa gửi /request rồi! Vui lòng đợi ${timeStr} nữa để gửi lời nhắn phát thanh tiếp theo nhé.`,
+        });
+        return;
+      }
+
+      donateRequestCooldownMap.set(user.clientId, now);
+
+      const alert: DonateRequestAlert = {
+        id: `req-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        clientId: user.clientId,
+        nickname: user.nickname,
+        avatar: user.avatar,
+        message: shoutoutMsg,
+        createdAt: now,
+      };
+      latestDonateRequest = alert;
+
+      // Also save as a special dedication message in chat history
+      addSystemChatMessage(
+        `📢 [Donate Lời Nhắn] ${user.avatar} ${user.nickname}: "${shoutoutMsg}"`,
+        'dedication'
+      );
+
+      // Broadcast pinned donate banner + trigger MC AI voice across all clients
+      io.emit('chat:donateRequest', alert);
+      // Tell sender their exact cooldown end timestamp
+      socket.emit('chat:requestCooldown', { nextAllowedAt: now + DONATE_REQUEST_COOLDOWN_MS });
+      return;
+    }
 
     const cleanReplyTo = parsed.data.replyTo
       ? {
@@ -1385,12 +1473,87 @@ io.on('connection', (socket: Socket) => {
       avatar: user.avatar,
       content: cleanContent,
       type: 'user',
+      stickerUrl: cleanStickerUrl,
+      stickerLabel: cleanStickerLabel,
       replyTo: cleanReplyTo,
+      reactions: {},
+      seenBy: [
+        {
+          clientId: user.clientId,
+          nickname: user.nickname,
+          avatar: user.avatar,
+        },
+      ],
       createdAt: Date.now(),
     };
 
     dbService.addChatMessage(msg);
     io.emit('chat:new', msg);
+  });
+
+  // Toggle emoji reaction on a specific chat message
+  socket.on('chat:react', (rawPayload: unknown) => {
+    const user = connectedUsers.get(socket.id);
+    if (!user) return;
+
+    const rate = reactionLimiter.check(user.clientId);
+    if (!rate.allowed) {
+      socket.emit('security:warning', { message: rate.warning });
+      return;
+    }
+
+    const parsed = ChatReactSchema.safeParse(rawPayload);
+    if (!parsed.success) return;
+
+    const existing = dbService.getChatMessageById(parsed.data.messageId);
+    if (!existing) return;
+
+    const emoji = sanitizeText(parsed.data.emoji, 10);
+    if (!emoji) return;
+
+    const reactions: Record<string, string[]> = existing.reactions ? { ...existing.reactions } : {};
+    const currentList = Array.isArray(reactions[emoji]) ? [...reactions[emoji]] : [];
+
+    if (currentList.includes(user.nickname)) {
+      const nextList = currentList.filter((n) => n !== user.nickname);
+      if (nextList.length === 0) {
+        delete reactions[emoji];
+      } else {
+        reactions[emoji] = nextList;
+      }
+    } else {
+      currentList.push(user.nickname);
+      reactions[emoji] = currentList;
+    }
+
+    dbService.updateChatReactions(existing.id, reactions);
+    io.emit('chat:reactionsUpdated', { messageId: existing.id, reactions });
+  });
+
+  // Mark a chat message as seen by current user
+  socket.on('chat:seen', (rawPayload: unknown) => {
+    const user = connectedUsers.get(socket.id);
+    if (!user || user.nickname === 'Khách Mới') return;
+
+    const parsed = ChatSeenSchema.safeParse(rawPayload);
+    if (!parsed.success) return;
+
+    const existing = dbService.getChatMessageById(parsed.data.messageId);
+    if (!existing || existing.type !== 'user') return;
+
+    const seenList = Array.isArray(existing.seenBy) ? [...existing.seenBy] : [];
+    if (seenList.some((u) => u.clientId === user.clientId)) {
+      return;
+    }
+
+    seenList.push({
+      clientId: user.clientId,
+      nickname: user.nickname,
+      avatar: user.avatar,
+    });
+
+    dbService.updateChatSeenBy(existing.id, seenList);
+    io.emit('chat:seenUpdated', { messageId: existing.id, seenBy: seenList });
   });
 
   socket.on('reaction:send', (rawPayload: unknown) => {

@@ -46,16 +46,47 @@ export function stopAiMcSpeech(): void {
   }
 }
 
+function cleanTrackTitleForSpeech(title: string): string {
+  return title
+    .replace(/\[.*?\]/g, ' ') // Remove [Official MV], [Lyrics], etc.
+    .replace(/\((?:official|mv|music video|audio|lyrics|lyric video|hd|4k|prod\.?[^)]*)\)/gi, ' ')
+    .replace(/\|.*$/g, ' ') // Remove trailing "| Official Music Video" after pipe
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function buildDonateRequestScript(
+  nickname: string,
+  message: string
+): string {
+  const cleanUser = (nickname || 'một vị khách').trim();
+  const cleanMsg = (message || '').trim();
+  return `Cảm ơn ${cleanUser} vừa gửi lời nhắn phát thanh: ${cleanMsg}`;
+}
+
 export function buildTrackAnnouncementScript(
   requestedBy: string,
+  title: string,
+  author: string,
   dedicationMessage?: string
 ): string {
   const cleanUser = (requestedBy || 'một vị khách').trim();
+  const cleanTitle = cleanTrackTitleForSpeech(title || '') || title || 'một giai điệu mới';
+  const cleanAuthor = (author || '').replace(/-\s*Topic$/i, '').replace(/Official$/i, '').trim();
   const cleanNote = (dedicationMessage || '').trim();
+
+  // Avoid repeating author if the YouTube title already includes the artist's name
+  const titleAlreadyHasAuthor =
+    cleanAuthor && cleanTitle.toLowerCase().includes(cleanAuthor.toLowerCase());
+  const songPhrase =
+    cleanAuthor && !titleAlreadyHasAuthor
+      ? `${cleanTitle}, thể hiện bởi ${cleanAuthor}`
+      : cleanTitle;
+
   if (cleanNote) {
-    return `Bài tiếp theo là bài của ${cleanUser} đã order, kèm lời nhắn: ${cleanNote}`;
+    return `Bài tiếp theo là bài ${songPhrase}, của ${cleanUser} đã order, kèm lời nhắn: ${cleanNote}`;
   }
-  return `Bài tiếp theo là bài của ${cleanUser} đã order.`;
+  return `Bài tiếp theo là bài ${songPhrase}, của ${cleanUser} đã order.`;
 }
 
 async function playAudioChunk(text: string, volume: number, token: number): Promise<boolean> {
