@@ -34,6 +34,7 @@ export const TopSearchBar: React.FC = () => {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const clientSearchCacheRef = useRef<Map<string, SearchResultItem[]>>(new Map());
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -54,6 +55,16 @@ export const TopSearchBar: React.FC = () => {
       return;
     }
 
+    const cacheKey = trimmed.toLowerCase();
+    const cached = clientSearchCacheRef.current.get(cacheKey);
+    if (cached) {
+      setSearchResults(cached);
+      setIsSearching(false);
+      setSearchError(null);
+      setIsOpen(true);
+      return;
+    }
+
     setIsOpen(true);
     setIsSearching(true);
     setSearchError(null);
@@ -67,7 +78,9 @@ export const TopSearchBar: React.FC = () => {
         setSearchError(data.error || 'Lỗi khi tìm kiếm bài hát.');
         setSearchResults([]);
       } else {
-        setSearchResults(data.results || []);
+        const list = data.results || [];
+        clientSearchCacheRef.current.set(cacheKey, list);
+        setSearchResults(list);
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
@@ -89,13 +102,21 @@ export const TopSearchBar: React.FC = () => {
       return;
     }
 
+    const cacheKey = trimmed.toLowerCase();
+    const cached = clientSearchCacheRef.current.get(cacheKey);
+    if (cached) {
+      setSearchResults(cached);
+      setIsSearching(false);
+      return;
+    }
+
     setIsSearching(true);
     const timer = setTimeout(() => {
       abortControllerRef.current?.abort();
       const controller = new AbortController();
       abortControllerRef.current = controller;
       performSearch(trimmed, controller.signal);
-    }, 320);
+    }, 150);
 
     return () => {
       clearTimeout(timer);
