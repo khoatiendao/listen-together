@@ -1148,6 +1148,17 @@ io.on('connection', (socket: Socket) => {
 
   socket.on('playback:ended', (endedTrackId: string) => {
     if (!playback.currentTrack || playback.currentTrack.id !== endedTrackId) return;
+
+    // Guard against premature/spurious 'ended' events from newly joined clients or YouTube seek glitches:
+    // If the track has a known duration (> 0), only allow natural ending if we are within 10 seconds of the end!
+    const currentPos = getComputedPosition();
+    if (
+      playback.currentTrack.duration > 0 &&
+      currentPos < Math.max(5, playback.currentTrack.duration - 10)
+    ) {
+      return;
+    }
+
     advanceToNextTrack();
   });
 

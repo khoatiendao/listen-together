@@ -125,7 +125,13 @@ export const StagePlayer: React.FC = () => {
           }
           if (state.playback.isPlaying && pState !== 1 && pState !== 3) {
             const targetPos = state.getSyncedPlaybackPosition();
-            playerRef.current.seekTo?.(targetPos, true);
+            lastSeekWallTimeRef.current = Date.now();
+            // Only seek if player already has metadata loaded (duration > 0), otherwise just playVideo
+            // becauseloadVideoById already passed startSeconds!
+            const loadedDur = Number(playerRef.current.getDuration?.() || 0);
+            if (loadedDur > 0) {
+              playerRef.current.seekTo?.(targetPos, true);
+            }
             playerRef.current.playVideo?.();
           }
           setNeedsAudioUnlock(false);
@@ -189,8 +195,19 @@ export const StagePlayer: React.FC = () => {
           },
           onStateChange: (event: any) => {
             const state = useRoomStore.getState();
+            // YT.PlayerState.ENDED === 0
+            // Only report natural track end if we didn't just load/seek in the last 3 seconds
+            // and if actual player time is genuinely near the end of the track
             if (event.data === 0 && currentTrackIdRef.current) {
-              notifyTrackEnded(currentTrackIdRef.current);
+              const sinceLastSeek = Date.now() - lastSeekWallTimeRef.current;
+              const trackDur = state.playback.currentTrack?.duration || 0;
+              const actualTime = Number(playerRef.current?.getCurrentTime?.() || 0);
+              if (
+                sinceLastSeek > 3000 &&
+                (trackDur === 0 || actualTime >= Math.max(5, trackDur - 10))
+              ) {
+                notifyTrackEnded(currentTrackIdRef.current);
+              }
               return;
             }
             if (event.data === 1) {
@@ -224,11 +241,7 @@ export const StagePlayer: React.FC = () => {
             }
           },
           onError: () => {
-            setTimeout(() => {
-              if (currentTrackIdRef.current) {
-                notifyTrackEnded(currentTrackIdRef.current);
-              }
-            }, 2000);
+            // Do not allow an individual client's transient player error to skip the room's song
           },
         },
       });
