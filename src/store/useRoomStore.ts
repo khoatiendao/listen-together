@@ -92,6 +92,11 @@ interface RoomStoreState {
   aiMcEnabled: boolean;
   theme: 'light' | 'dark';
 
+  // Soft update notification (never auto-reloads!)
+  initialServerBootId: string | null;
+  hasNewVersionAvailable: boolean;
+  dismissUpdateBanner: () => void;
+
   // Helpers
   isHost: () => boolean;
   getRequiredVotes: () => number;
@@ -179,6 +184,10 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
   aiMcEnabled: loadInitialAiMcEnabled(),
   theme: loadInitialTheme(),
 
+  initialServerBootId: null,
+  hasNewVersionAvailable: false,
+  dismissUpdateBanner: () => set({ hasNewVersionAvailable: false }),
+
   toggleAiMc: () => {
     const next = !get().aiMcEnabled;
     try {
@@ -257,9 +266,33 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
 
     socket.on('room:state', (payload: RoomStatePayload) => {
       const offset = payload.serverTime - Date.now();
+      const prevState = get();
+
+      // Detect if server restarted / deployed a new build while user was already in the room
+      const isNewDeploy =
+        Boolean(prevState.initialServerBootId) &&
+        Boolean(payload.serverBootId) &&
+        prevState.initialServerBootId !== payload.serverBootId;
+
+      // If this is a reconnect right after a fresh Render deploy whose playback reset to default seed track,
+      // preserve the user's currently playing track locally so their music NEVER cuts out mid-song!
+      const isServerDefaultSeed =
+        payload.playback.currentTrack?.id?.startsWith('seed-') &&
+        payload.playback.currentTrack?.requestedByClientId === 'system';
+      const userAlreadyListeningToRealSong =
+        Boolean(prevState.playback.currentTrack) &&
+        !prevState.playback.currentTrack?.id?.startsWith('seed-');
+
+      const nextPlayback =
+        isNewDeploy && isServerDefaultSeed && userAlreadyListeningToRealSong
+          ? prevState.playback
+          : payload.playback;
+
       set({
         roomName: payload.roomName,
-        playback: payload.playback,
+        initialServerBootId: prevState.initialServerBootId || payload.serverBootId || null,
+        hasNewVersionAvailable: isNewDeploy ? true : prevState.hasNewVersionAvailable,
+        playback: nextPlayback,
         hostControl: payload.hostControl,
         latestDonateRequest: payload.latestDonateRequest ?? null,
         queue: payload.queue,

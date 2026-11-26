@@ -97,6 +97,7 @@ export interface DonateRequestAlert {
 
 export interface RoomStatePayload {
   roomName: string;
+  serverBootId: string; // Unique ID per server deploy/restart so old clients can show a non-intrusive update banner without auto-reloading
   playback: PlaybackState;
   hostControl: HostControlState;
   latestDonateRequest: DonateRequestAlert | null;

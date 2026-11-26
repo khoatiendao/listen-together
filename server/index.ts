@@ -36,6 +36,7 @@ import {
 } from '../shared/types.ts';
 
 const PORT = Number(process.env.PORT || 3001);
+const SERVER_BOOT_ID = process.env.RENDER_GIT_COMMIT || `boot-${Date.now().toString(36)}`;
 const app = express();
 app.disable('x-powered-by');
 // Trust reverse proxy (Render / Cloudflare) so rate-limiter & IP protection identify real user IPs
@@ -984,6 +985,7 @@ io.on('connection', (socket: Socket) => {
 
     const statePayload: RoomStatePayload = {
       roomName: 'Tiệm Trà Acoustic & Chill',
+      serverBootId: SERVER_BOOT_ID,
       playback: getEffectivePlaybackSnapshot(),
       hostControl,
       latestDonateRequest,

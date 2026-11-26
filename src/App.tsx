@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Coffee, Wifi, WifiOff, UserCheck, ShieldAlert, X, Sun, Moon } from 'lucide-react';
+import { Coffee, Wifi, WifiOff, UserCheck, ShieldAlert, X, Sun, Moon, Sparkles, RefreshCw } from 'lucide-react';
 import { useRoomStore } from './store/useRoomStore.ts';
 import { WelcomeModal } from './components/WelcomeModal.tsx';
 import { TopSearchBar } from './components/TopSearchBar.tsx';
@@ -17,6 +17,8 @@ export const App: React.FC = () => {
   const clearWarning = useRoomStore((s) => s.clearWarning);
   const theme = useRoomStore((s) => s.theme);
   const toggleTheme = useRoomStore((s) => s.toggleTheme);
+  const hasNewVersionAvailable = useRoomStore((s) => s.hasNewVersionAvailable);
+  const dismissUpdateBanner = useRoomStore((s) => s.dismissUpdateBanner);
 
   useEffect(() => {
     initSocket();
@@ -116,6 +118,41 @@ export const App: React.FC = () => {
           </div>
         </div>
       </header>
+
+      {/* Non-intrusive New Version Available Toast (Never auto-reloads; user reloads whenever they want!) */}
+      {hasNewVersionAvailable && (
+        <div className="fixed bottom-5 left-5 z-50 max-w-sm rounded-2xl bg-matcha-50 dark:bg-zinc-900 border-2 border-matcha-400 dark:border-emerald-600 shadow-2xl p-3.5 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-matcha-600 dark:bg-emerald-600 text-white flex items-center justify-center shrink-0">
+            <Sparkles className="w-4 h-4" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-bold text-tea-900 dark:text-white">
+              Tiệm Trà vừa có bản cập nhật mới!
+            </div>
+            <p className="text-[11px] text-tea-600 dark:text-zinc-400 leading-snug mt-0.5">
+              Bạn vẫn có thể nghe nhạc bình thường, hoặc bấm tải lại để dùng tính năng mới.
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="px-3 py-1.5 rounded-xl bg-matcha-600 dark:bg-emerald-600 hover:bg-matcha-700 dark:hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1 shadow-sm transition"
+            >
+              <RefreshCw className="w-3 h-3" />
+              <span>Tải lại</span>
+            </button>
+            <button
+              type="button"
+              onClick={dismissUpdateBanner}
+              className="p-1 rounded-lg text-tea-500 dark:text-zinc-400 hover:text-tea-900 dark:hover:text-white transition"
+              title="Để sau"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Anti-Spam / Security Toast Notification */}
       {warningBanner && (
