@@ -86,6 +86,12 @@ export const AddTrackSchema = z.object({
   dedicationMessage: z.string().max(140).optional(),
 });
 
+export function isAllowedEphemeralImageDataUrl(raw: string): boolean {
+  if (typeof raw !== 'string') return false;
+  if (raw.length > 420_000) return false; // Max ~300KB binary compressed image
+  return /^data:image\/(jpeg|jpg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(raw);
+}
+
 export const ChatMessageSchema = z
   .object({
     content: z.string().max(280).optional().default(''),
@@ -96,6 +102,11 @@ export const ChatMessageSchema = z
       .refine(isAllowedMediaUrl, 'Nguồn GIF/Sticker không hợp lệ')
       .optional(),
     stickerLabel: z.string().max(60).optional(),
+    imageDataUrl: z
+      .string()
+      .max(420_000)
+      .refine(isAllowedEphemeralImageDataUrl, 'Ảnh không hợp lệ hoặc vượt quá dung lượng cho phép')
+      .optional(),
     replyTo: z
       .object({
         id: z.string().min(1).max(64),
@@ -105,9 +116,13 @@ export const ChatMessageSchema = z
       })
       .optional(),
   })
-  .refine((data) => Boolean((data.content && data.content.trim().length > 0) || data.stickerUrl), {
-    message: 'Tin nhắn hoặc sticker không được để trống',
-  });
+  .refine(
+    (data) =>
+      Boolean((data.content && data.content.trim().length > 0) || data.stickerUrl || data.imageDataUrl),
+    {
+      message: 'Tin nhắn, hình ảnh hoặc sticker không được để trống',
+    }
+  );
 
 export const ChatReactSchema = z.object({
   messageId: z.string().min(1).max(64),

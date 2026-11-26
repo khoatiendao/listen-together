@@ -111,10 +111,10 @@ const ttsApiLimiter = rateLimit({
 const ttsAudioCache = new Map<string, Buffer>();
 const MAX_TTS_CACHE_ITEMS = 80;
 
-// 2. Socket.io Server (Strict 16KB buffer limit, generous pingTimeout, global connection cap)
+// 2. Socket.io Server (512KB max buffer to support compressed ephemeral chat images while blocking multi-MB memory attacks)
 const MAX_GLOBAL_SOCKETS = 300;
 const io = new Server(httpServer, {
-  maxHttpBufferSize: 16 * 1024, // 16KB max packet size
+  maxHttpBufferSize: 512 * 1024, // 512KB max packet size
   pingInterval: 25000,
   pingTimeout: 60000,
   cors: {
@@ -236,6 +236,10 @@ const hostControl: HostControlState = {
   aiMcEnabled: savedAiMcEnabled,
   pendingApprovals: [],
 };
+
+// Grace timer so temporary WebSocket drops (Chrome background throttling / Render proxy 30-min reset) NEVER steal Host role!
+let hostDisconnectGraceTimer: ReturnType<typeof setTimeout> | null = null;
+const HOST_DISCONNECT_GRACE_MS = 45_000; // Wait 45 seconds before reassigning Host!
 
 function getComputedPosition(): number {
   if (!playback.currentTrack) return 0;
@@ -940,10 +944,16 @@ io.on('connection', (socket: Socket) => {
       hostControl.hostClientId === profile.clientId ||
       (hostControl.hostNickname === 'Khách Mới' && cleanNickname !== 'Khách Mới')
     ) {
+      // Host is back! Cancel any pending host transfer grace timer immediately!
+      if (hostDisconnectGraceTimer && hostControl.hostClientId === profile.clientId) {
+        clearTimeout(hostDisconnectGraceTimer);
+        hostDisconnectGraceTimer = null;
+      }
       hostControl.hostClientId = profile.clientId;
       hostControl.hostNickname = profile.nickname;
       hostControl.hostAvatar = profile.avatar;
-    } else {
+    } else if (!hostDisconnectGraceTimer) {
+      // Only auto-assign if we are NOT currently waiting for the existing Host to reconnect within grace window
       ensureHostAssigned();
     }
 
@@ -1519,8 +1529,9 @@ io.on('connection', (socket: Socket) => {
     const cleanStickerLabel = parsed.data.stickerLabel
       ? sanitizeText(parsed.data.stickerLabel, 50)
       : undefined;
+    const cleanImageDataUrl = parsed.data.imageDataUrl ? parsed.data.imageDataUrl.trim() : undefined;
 
-    if (!cleanContent && !cleanStickerUrl) return;
+    if (!cleanContent && !cleanStickerUrl && !cleanImageDataUrl) return;
 
     // Intercept "/request [lời nhắn]" -> Streamer Donate Shoutout + MC AI Voice + 2-Minute Cooldown!
     if (/^\/request\b/i.test(cleanContent)) {
@@ -1591,6 +1602,7 @@ io.on('connection', (socket: Socket) => {
       type: 'user',
       stickerUrl: cleanStickerUrl,
       stickerLabel: cleanStickerLabel,
+      imageDataUrl: cleanImageDataUrl,
       replyTo: cleanReplyTo,
       reactions: {},
       seenBy: [
@@ -1603,7 +1615,11 @@ io.on('connection', (socket: Socket) => {
       createdAt: Date.now(),
     };
 
-    dbService.addChatMessage(msg);
+    // IMPORTANT: If message contains an ephemeral uploaded image, DO NOT persist it to SQLite DB!
+    // It is broadcast live ONLY to people currently in the chat room and vanishes when leaving/reloading.
+    if (!cleanImageDataUrl) {
+      dbService.addChatMessage(msg);
+    }
     io.emit('chat:new', msg);
   });
 
@@ -1715,6 +1731,10 @@ io.on('connection', (socket: Socket) => {
 
     const remainingOnline = getUniqueOnlineUsers();
     if (remainingOnline.length === 0) {
+      if (hostDisconnectGraceTimer) {
+        clearTimeout(hostDisconnectGraceTimer);
+        hostDisconnectGraceTimer = null;
+      }
       hostControl.hostClientId = null;
       hostControl.hostNickname = null;
       hostControl.hostAvatar = null;
@@ -1724,13 +1744,35 @@ io.on('connection', (socket: Socket) => {
       disconnectedUser.clientId === hostControl.hostClientId &&
       !remainingOnline.some((u) => u.clientId === hostControl.hostClientId)
     ) {
-      ensureHostAssigned();
-      if (hostControl.hostClientId) {
-        addSystemChatMessage(
-          `👑 Chủ phòng cũ đã rời đi. Quyền Chủ Phòng được chuyển cho ${hostControl.hostAvatar} ${hostControl.hostNickname}.`
-        );
+      // Do NOT immediately steal Host role! Wait 45 seconds in case Chrome/Render proxy just did a brief WebSocket reconnect.
+      if (hostDisconnectGraceTimer) {
+        clearTimeout(hostDisconnectGraceTimer);
       }
-      broadcastQueueAndMetaUpdate();
+      const lostHostClientId = disconnectedUser.clientId;
+      hostDisconnectGraceTimer = setTimeout(() => {
+        hostDisconnectGraceTimer = null;
+        const currentOnline = getUniqueOnlineUsers();
+        // If the original Host has already reconnected within 45s, do nothing!
+        if (currentOnline.some((u) => u.clientId === lostHostClientId)) {
+          return;
+        }
+        if (currentOnline.length === 0) {
+          hostControl.hostClientId = null;
+          hostControl.hostNickname = null;
+          hostControl.hostAvatar = null;
+          hostControl.pendingApprovals = [];
+          return;
+        }
+        if (hostControl.hostClientId === lostHostClientId) {
+          ensureHostAssigned();
+          if (hostControl.hostClientId) {
+            addSystemChatMessage(
+              `👑 Chủ phòng cũ đã rời đi. Quyền Chủ Phòng được chuyển cho ${hostControl.hostAvatar} ${hostControl.hostNickname}.`
+            );
+          }
+          broadcastQueueAndMetaUpdate();
+        }
+      }, HOST_DISCONNECT_GRACE_MS);
     }
 
     io.emit('room:users', remainingOnline);

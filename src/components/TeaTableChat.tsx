@@ -14,6 +14,7 @@ import {
   Eye,
   Music,
   Megaphone,
+  ImagePlus,
 } from 'lucide-react';
 import { useRoomStore } from '../store/useRoomStore.ts';
 import { ChatMessage, ChatReplyQuote, UserProfile } from '../../shared/types.ts';
@@ -117,6 +118,65 @@ export const TeaTableChat: React.FC = () => {
   const [showVibePicker, setShowVibePicker] = useState(false);
   const [vibeTab, setVibeTab] = useState<'gif' | 'sticker'>('gif');
   const [cooldownSecLeft, setCooldownSecLeft] = useState(0);
+  const [pendingImageDataUrl, setPendingImageDataUrl] = useState<string | null>(null);
+  const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Client-side Canvas compressor so pasted/uploaded images stay fast (< 250KB) and crisp
+  const compressImageFile = (file: File): Promise<string | null> => {
+    return new Promise((resolve) => {
+      if (!file.type.startsWith('image/')) {
+        resolve(null);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 960;
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            if (width >= height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(null);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, width, height);
+          let dataUrl = canvas.toDataURL('image/jpeg', 0.78);
+          if (dataUrl.length > 380_000) {
+            dataUrl = canvas.toDataURL('image/jpeg', 0.58);
+          }
+          resolve(dataUrl.length <= 410_000 ? dataUrl : null);
+        };
+        img.onerror = () => resolve(null);
+        img.src = String(reader.result);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleImageFilePicked = async (file: File | undefined) => {
+    if (!file) return;
+    const compressed = await compressImageFile(file);
+    if (compressed) {
+      setPendingImageDataUrl(compressed);
+      setShowVibePicker(false);
+      setTimeout(() => inputRef.current?.focus(), 20);
+    }
+  };
 
   // Live countdown for 2-minute /request cooldown (runs cleanly down to 0 every 500ms)
   useEffect(() => {
@@ -300,7 +360,13 @@ export const TeaTableChat: React.FC = () => {
       id: msg.id,
       nickname: msg.nickname,
       avatar: msg.avatar,
-      content: msg.content || (msg.stickerLabel ? `[GIF] ${msg.stickerLabel}` : '[Hình động âm nhạc]'),
+      content:
+        msg.content ||
+        (msg.imageDataUrl
+          ? '[Hình ảnh tạm thời]'
+          : msg.stickerLabel
+          ? `[GIF] ${msg.stickerLabel}`
+          : '[Hình động âm nhạc]'),
     });
     setOpenReactPickerMsgId(null);
     setTimeout(() => {
@@ -342,12 +408,13 @@ export const TeaTableChat: React.FC = () => {
     }
 
     const currentVal = (inputRef.current ? inputRef.current.value : text).trim();
-    if (!currentVal) return;
+    if (!currentVal && !pendingImageDataUrl) return;
 
     lastSubmittedAtRef.current = Date.now();
-    sendChatMessage(currentVal, replyingTo || undefined);
+    sendChatMessage(currentVal, replyingTo || undefined, undefined, pendingImageDataUrl || undefined);
 
     setText('');
+    setPendingImageDataUrl(null);
     setReplyingTo(null);
     setMentionQuery(null);
     setShowVibePicker(false);
@@ -659,6 +726,25 @@ export const TeaTableChat: React.FC = () => {
                           </button>
                         )}
 
+                        {msg.imageDataUrl && (
+                          <div className="mb-1.5 flex flex-col items-center">
+                            <img
+                              src={msg.imageDataUrl}
+                              alt="Ảnh chia sẻ tạm thời trong phòng"
+                              onClick={() => setLightboxImageUrl(msg.imageDataUrl!)}
+                              className="max-w-[230px] sm:max-w-[260px] max-h-60 rounded-xl object-cover cursor-zoom-in border border-black/10 dark:border-white/10 hover:opacity-95 transition"
+                              title="Bấm để phóng to ảnh (Ảnh tạm thời, không lưu vào hệ thống)"
+                            />
+                            <span
+                              className={`mt-1 text-[9px] italic ${
+                                isMe ? 'text-white/75' : 'text-tea-500 dark:text-zinc-400'
+                              }`}
+                            >
+                              Ảnh tạm trong phiên • Bấm để xem lớn
+                            </span>
+                          </div>
+                        )}
+
                         {msg.stickerUrl && (
                           <div className="flex flex-col items-center">
                             <img
@@ -952,11 +1038,65 @@ export const TeaTableChat: React.FC = () => {
         </div>
       )}
 
-      {/* Chat Input with Music GIF / Sticker Button */}
+      {/* Pending Ephemeral Image Preview above Input */}
+      {pendingImageDataUrl && (
+        <div className="px-3.5 py-2 bg-tea-100/90 dark:bg-zinc-800/95 border-t border-tea-200 dark:border-zinc-700 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <img
+              src={pendingImageDataUrl}
+              alt="Xem trước ảnh"
+              className="w-12 h-12 rounded-xl object-cover border border-tea-300 dark:border-zinc-600 shrink-0"
+            />
+            <div className="text-xs min-w-0">
+              <div className="font-semibold text-tea-900 dark:text-zinc-100">
+                Ảnh sẵn sàng gửi (Chế độ tạm thời)
+              </div>
+              <p className="text-[10px] text-tea-600 dark:text-zinc-400 truncate">
+                Chỉ hiển thị lúc đang trong phòng, không lưu trên server
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setPendingImageDataUrl(null)}
+            className="p-1 rounded-lg text-tea-500 dark:text-zinc-400 hover:text-rose-600 transition shrink-0"
+            title="Xóa ảnh đang chọn"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Chat Input with Image Upload & Music GIF / Sticker Button */}
       <form
         onSubmit={handleSubmit}
-        className="p-3 border-t border-tea-200/80 dark:border-zinc-800 bg-tea-50/70 dark:bg-zinc-900 flex items-end gap-2"
+        className="p-3 border-t border-tea-200/80 dark:border-zinc-800 bg-tea-50/70 dark:bg-zinc-900 flex items-end gap-1.5 sm:gap-2"
       >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            handleImageFilePicked(file);
+            e.target.value = '';
+          }}
+        />
+
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className={`h-10 w-10 rounded-2xl border flex items-center justify-center shrink-0 transition ${
+            pendingImageDataUrl
+              ? 'bg-matcha-600 dark:bg-emerald-600 text-white border-matcha-600 dark:border-emerald-500'
+              : 'bg-white dark:bg-zinc-800 hover:bg-tea-100 dark:hover:bg-zinc-700 text-tea-700 dark:text-zinc-300 border-tea-200 dark:border-zinc-700'
+          }`}
+          title="Gửi ảnh tạm thời (Hỗ trợ chọn ảnh hoặc dán Ctrl+V / Cmd+V)"
+        >
+          <ImagePlus className="w-4 h-4" />
+        </button>
+
         <button
           type="button"
           onClick={() => setShowVibePicker((v) => !v)}
@@ -975,6 +1115,20 @@ export const TeaTableChat: React.FC = () => {
           rows={1}
           value={text}
           onChange={handleInputChange}
+          onPaste={(e) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            for (const item of items) {
+              if (item.type.startsWith('image/')) {
+                const file = item.getAsFile();
+                if (file) {
+                  e.preventDefault();
+                  handleImageFilePicked(file);
+                }
+                break;
+              }
+            }
+          }}
           onKeyDown={(e) => {
             if (mentionQuery !== null && filteredMentions.length > 0) {
               if (e.key === 'ArrowDown') {
@@ -1011,7 +1165,9 @@ export const TeaTableChat: React.FC = () => {
             }
           }}
           placeholder={
-            replyingTo
+            pendingImageDataUrl
+              ? 'Thêm chú thích cho ảnh (hoặc bấm Enter gửi ngay)...'
+              : replyingTo
               ? `Trả lời ${replyingTo.nickname}...`
               : 'Nhâm nhi tách trà, nhắn đôi lời...'
           }
@@ -1021,13 +1177,37 @@ export const TeaTableChat: React.FC = () => {
         />
         <button
           type="submit"
-          disabled={!text.trim()}
+          disabled={!text.trim() && !pendingImageDataUrl}
           className="h-10 w-10 rounded-2xl bg-matcha-600 dark:bg-emerald-600 hover:bg-matcha-700 dark:hover:bg-emerald-500 disabled:opacity-40 text-white shadow-sm transition flex items-center justify-center shrink-0"
           title="Gửi tin nhắn (Enter)"
         >
           <Send className="w-4 h-4" />
         </button>
       </form>
+
+      {/* Fullscreen Image Lightbox Modal */}
+      {lightboxImageUrl && (
+        <div
+          onClick={() => setLightboxImageUrl(null)}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 cursor-zoom-out"
+        >
+          <div className="relative max-w-4xl max-h-[90vh]">
+            <img
+              src={lightboxImageUrl}
+              alt="Xem ảnh lớn"
+              className="max-w-full max-h-[88vh] rounded-2xl shadow-2xl object-contain"
+            />
+            <button
+              type="button"
+              onClick={() => setLightboxImageUrl(null)}
+              className="absolute -top-3 -right-3 w-9 h-9 rounded-full bg-white text-zinc-900 shadow-lg flex items-center justify-center hover:bg-rose-500 hover:text-white transition"
+              title="Đóng"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

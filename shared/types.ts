@@ -71,6 +71,7 @@ export interface ChatMessage {
   type: 'user' | 'system' | 'dedication';
   stickerUrl?: string;
   stickerLabel?: string;
+  imageDataUrl?: string; // Ephemeral in-room image (never saved to SQLite DB; vanishes when leaving/reloading)
   replyTo?: ChatReplyQuote;
   reactions?: Record<string, string[]>; // emoji -> array of nicknames who reacted
   seenBy?: ChatSeenUser[];

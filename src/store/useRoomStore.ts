@@ -132,7 +132,8 @@ interface RoomStoreState {
   sendChatMessage: (
     content: string,
     replyTo?: ChatReplyQuote,
-    sticker?: { url: string; label: string }
+    sticker?: { url: string; label: string },
+    imageDataUrl?: string
   ) => void;
   reactToChatMessage: (messageId: string, emoji: string) => void;
   markMessageAsSeen: (messageId: string) => void;
@@ -468,12 +469,13 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
     get().socket?.emit('playback:ended', trackId);
   },
 
-  sendChatMessage: (content, replyTo, sticker) => {
+  sendChatMessage: (content, replyTo, sticker, imageDataUrl) => {
     get().socket?.emit('chat:send', {
       content,
       replyTo,
       stickerUrl: sticker?.url,
       stickerLabel: sticker?.label,
+      imageDataUrl,
     });
   },
 
