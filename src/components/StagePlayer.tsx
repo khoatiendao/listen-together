@@ -7,7 +7,6 @@ import {
   VolumeX,
   Heart,
   Eye,
-  EyeOff,
   Radio,
   Sparkles,
   ThumbsUp,
@@ -18,8 +17,12 @@ import {
   XCircle,
   BellRing,
   Bot,
+  Disc3,
+  AlignLeft,
+  Loader2,
 } from 'lucide-react';
 import { useRoomStore } from '../store/useRoomStore.ts';
+import { LyricsResponse } from '../../shared/types.ts';
 import {
   buildDonateRequestScript,
   buildTrackAnnouncementScript,
@@ -96,9 +99,15 @@ export const StagePlayer: React.FC = () => {
   const [displayPos, setDisplayPos] = useState(0);
   const [playerReady, setPlayerReady] = useState(false);
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
-  const [showMvMode, setShowMvMode] = useState(false);
+  const [stageMode, setStageMode] = useState<'vinyl' | 'mv' | 'lyrics'>('vinyl');
   const [isDraggingSeek, setIsDraggingSeek] = useState(false);
   const [aiMcSpeakingText, setAiMcSpeakingText] = useState<string | null>(null);
+
+  // Synced Lyrics state
+  const [lyricsData, setLyricsData] = useState<LyricsResponse | null>(null);
+  const [isLoadingLyrics, setIsLoadingLyrics] = useState(false);
+  const lyricsContainerRef = useRef<HTMLDivElement | null>(null);
+  const lastFetchedLyricsTrackIdRef = useRef<string | null>(null);
 
   const playerRef = useRef<any>(null);
   const currentVideoIdRef = useRef<string | null>(null);
@@ -437,6 +446,80 @@ export const StagePlayer: React.FC = () => {
     });
   }, [activeDonateEvent]);
 
+  // Fetch synced lyrics whenever current track changes (or when user opens Lyrics mode)
+  useEffect(() => {
+    const currentTrack = playback.currentTrack;
+    if (!currentTrack) {
+      setLyricsData(null);
+      lastFetchedLyricsTrackIdRef.current = null;
+      return;
+    }
+
+    if (lastFetchedLyricsTrackIdRef.current === currentTrack.id) return;
+    lastFetchedLyricsTrackIdRef.current = currentTrack.id;
+
+    let cancelled = false;
+    setIsLoadingLyrics(true);
+    setLyricsData(null);
+
+    const params = new URLSearchParams({
+      title: currentTrack.title,
+      author: currentTrack.author,
+      duration: String(currentTrack.duration || 0),
+    });
+
+    fetch(`/api/lyrics?${params.toString()}`)
+      .then((r) => r.json())
+      .then((data: LyricsResponse) => {
+        if (!cancelled) {
+          setLyricsData(data);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLyricsData({ found: false, isSynced: false, lines: [] });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingLyrics(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [playback.currentTrack?.id]);
+
+  // Compute current active lyric line index based on real-time playback position
+  const activeLyricIndex = (() => {
+    if (!lyricsData?.found || !lyricsData.isSynced || lyricsData.lines.length === 0) return -1;
+    let idx = -1;
+    for (let i = 0; i < lyricsData.lines.length; i++) {
+      if (displayPos + 0.35 >= lyricsData.lines[i].time) {
+        idx = i;
+      } else {
+        break;
+      }
+    }
+    return idx;
+  })();
+
+  // Auto-center active lyric line smoothly inside the lyrics panel (without scrolling the page)
+  useEffect(() => {
+    if (stageMode !== 'lyrics' || activeLyricIndex < 0) return;
+    const container = lyricsContainerRef.current;
+    const activeEl = document.getElementById(`lyric-line-${activeLyricIndex}`);
+    if (container && activeEl) {
+      const targetScrollTop =
+        activeEl.offsetTop - container.clientHeight / 2 + activeEl.clientHeight / 2;
+      container.scrollTo({
+        top: Math.max(0, targetScrollTop),
+        behavior: 'smooth',
+      });
+    }
+  }, [activeLyricIndex, stageMode]);
+
   useEffect(() => {
     if (!playerReady || !playerRef.current) return;
     try {
@@ -674,15 +757,48 @@ export const StagePlayer: React.FC = () => {
             </span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setShowMvMode((v) => !v)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-tea-100 dark:bg-zinc-800 hover:bg-tea-200 dark:hover:bg-zinc-700 text-tea-800 dark:text-zinc-200 border border-transparent dark:border-zinc-700 text-xs font-medium transition"
-            title="Chuyển đổi giữa Đĩa Than Acoustic và Xem Video MV"
-          >
-            {showMvMode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-            <span>{showMvMode ? 'Đĩa Than' : 'Xem MV'}</span>
-          </button>
+          {/* 3-Way Stage View Switcher: Đĩa Than | Lyric | Xem MV */}
+          <div className="inline-flex items-center p-0.5 rounded-xl bg-tea-100 dark:bg-zinc-800 border border-tea-200/80 dark:border-zinc-700">
+            <button
+              type="button"
+              onClick={() => setStageMode('vinyl')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition ${
+                stageMode === 'vinyl'
+                  ? 'bg-white dark:bg-zinc-700 text-tea-900 dark:text-white shadow-sm'
+                  : 'text-tea-700 dark:text-zinc-400 hover:text-tea-900 dark:hover:text-white'
+              }`}
+              title="Chế độ Đĩa Than Acoustic"
+            >
+              <Disc3 className="w-3.5 h-3.5" />
+              <span>Đĩa Than</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStageMode('lyrics')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition ${
+                stageMode === 'lyrics'
+                  ? 'bg-matcha-600 dark:bg-emerald-600 text-white shadow-sm'
+                  : 'text-tea-700 dark:text-zinc-400 hover:text-tea-900 dark:hover:text-white'
+              }`}
+              title="Chế độ Chạy Lời Bài Hát (Lyric Sync)"
+            >
+              <AlignLeft className="w-3.5 h-3.5" />
+              <span>Lyric</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStageMode('mv')}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition ${
+                stageMode === 'mv'
+                  ? 'bg-white dark:bg-zinc-700 text-tea-900 dark:text-white shadow-sm'
+                  : 'text-tea-700 dark:text-zinc-400 hover:text-tea-900 dark:hover:text-white'
+              }`}
+              title="Xem Video MV Gốc"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>Xem MV</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -794,7 +910,7 @@ export const StagePlayer: React.FC = () => {
       {/* YouTube Player Container */}
       <div
         className={
-          showMvMode
+          stageMode === 'mv'
             ? 'relative z-10 w-full aspect-video rounded-2xl overflow-hidden bg-black mb-5 shadow-md border border-tea-200 dark:border-zinc-700'
             : 'fixed bottom-1 right-1 w-[2px] h-[2px] opacity-[0.01] pointer-events-none overflow-hidden z-0'
         }
@@ -802,10 +918,83 @@ export const StagePlayer: React.FC = () => {
         <div id="yt-hidden-player" className="w-full h-full" />
       </div>
 
+      {/* Synced Karaoke-Style Lyrics Stage Panel */}
+      {stageMode === 'lyrics' && track && (
+        <div className="relative z-10 mb-5 rounded-2xl bg-gradient-to-b from-tea-100/90 via-tea-50/90 to-matcha-50/80 dark:from-zinc-950 dark:via-zinc-900 dark:to-emerald-950/30 border border-tea-200 dark:border-zinc-800 shadow-inner overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-tea-200/70 dark:border-zinc-800 flex items-center justify-between text-xs">
+            <span className="font-semibold text-tea-800 dark:text-zinc-200 flex items-center gap-1.5">
+              <AlignLeft className="w-3.5 h-3.5 text-matcha-600 dark:text-emerald-400" />
+              <span>Lời Bài Hát (Lyric)</span>
+            </span>
+            {lyricsData?.found && (
+              <span className="px-2 py-0.5 rounded-full bg-matcha-100 dark:bg-emerald-950 text-matcha-700 dark:text-emerald-300 text-[10px] font-semibold">
+                {lyricsData.isSynced ? '✨ Tự động chạy theo nhạc' : '📜 Lời bài hát gốc'}
+              </span>
+            )}
+          </div>
+
+          <div
+            ref={lyricsContainerRef}
+            className="relative h-64 sm:h-72 overflow-y-auto px-5 py-10 space-y-3.5 text-center scroll-smooth"
+          >
+            {isLoadingLyrics ? (
+              <div className="h-full flex flex-col items-center justify-center gap-2 text-tea-600 dark:text-zinc-400">
+                <Loader2 className="w-6 h-6 animate-spin text-matcha-600 dark:text-emerald-400" />
+                <span className="text-xs font-medium">Đang tìm lời bài hát khớp theo nhạc...</span>
+              </div>
+            ) : !lyricsData?.found || lyricsData.lines.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center gap-2 text-tea-600 dark:text-zinc-400 px-4">
+                <span className="text-3xl">🎼</span>
+                <p className="text-xs sm:text-sm font-semibold text-tea-800 dark:text-zinc-200">
+                  Chưa tìm thấy lời cho bản nhạc này
+                </p>
+                <p className="text-[11px] opacity-80 max-w-sm">
+                  Có thể đây là bản nhạc không lời, Remix hoặc Live Radio. Bạn có thể thưởng thức ở chế độ Đĩa Than hoặc Xem MV nhé!
+                </p>
+              </div>
+            ) : (
+              lyricsData.lines.map((line, idx) => {
+                const isActive = lyricsData.isSynced && idx === activeLyricIndex;
+                const isPast = lyricsData.isSynced && activeLyricIndex >= 0 && idx < activeLyricIndex;
+                const canClickToSeek = lyricsData.isSynced && !strictRestricted && line.time >= 0;
+
+                return (
+                  <p
+                    id={`lyric-line-${idx}`}
+                    key={`${idx}-${line.time}`}
+                    onClick={() => {
+                      if (canClickToSeek) {
+                        setDisplayPos(line.time);
+                        lastSeekWallTimeRef.current = Date.now();
+                        seekTo(line.time);
+                      }
+                    }}
+                    title={canClickToSeek ? 'Bấm để nhảy tới câu hát này' : undefined}
+                    className={`transition-all duration-300 leading-relaxed ${
+                      canClickToSeek ? 'cursor-pointer hover:opacity-100' : ''
+                    } ${
+                      isActive
+                        ? 'text-base sm:text-xl font-bold text-matcha-700 dark:text-emerald-300 scale-[1.03]'
+                        : isPast
+                        ? 'text-xs sm:text-sm font-medium text-tea-500/70 dark:text-zinc-500'
+                        : lyricsData.isSynced
+                        ? 'text-xs sm:text-sm font-medium text-tea-700/80 dark:text-zinc-400'
+                        : 'text-sm sm:text-base font-medium text-tea-800 dark:text-zinc-200'
+                    }`}
+                  >
+                    {line.text}
+                  </p>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Vinyl Record & Track Showcase */}
       {track ? (
         <div className="relative z-10 flex flex-col md:flex-row items-center gap-6">
-          {!showMvMode && (
+          {stageMode === 'vinyl' && (
             <div className="relative shrink-0 group">
               <div
                 className={`w-44 h-44 sm:w-52 sm:h-52 rounded-full bg-gradient-to-tr from-stone-950 via-stone-800 to-stone-950 p-3 shadow-xl border-4 border-tea-200 dark:border-zinc-700 flex items-center justify-center ${

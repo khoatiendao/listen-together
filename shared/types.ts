@@ -125,3 +125,16 @@ export interface MoodCategory {
   emoji: string;
   description: string;
 }
+
+export interface LyricLine {
+  time: number; // timestamp in seconds
+  text: string;
+}
+
+export interface LyricsResponse {
+  found: boolean;
+  isSynced: boolean;
+  lines: LyricLine[];
+  plainLyrics?: string;
+  source?: string;
+}

@@ -26,6 +26,8 @@ import {
   DonateRequestAlert,
   FloatingReaction,
   HostControlState,
+  LyricLine,
+  LyricsResponse,
   MoodCategory,
   PendingHostApproval,
   PlaybackState,
@@ -111,6 +113,10 @@ const ttsApiLimiter = rateLimit({
 });
 const ttsAudioCache = new Map<string, Buffer>();
 const MAX_TTS_CACHE_ITEMS = 80;
+
+const lyricsCache = new Map<string, { timestamp: number; data: LyricsResponse }>();
+const LYRICS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour cache
+const MAX_LYRICS_CACHE_ITEMS = 120;
 
 // 2. Socket.io Server (512KB max buffer to support compressed ephemeral chat images while blocking multi-MB memory attacks)
 const MAX_GLOBAL_SOCKETS = 300;
@@ -585,6 +591,183 @@ app.get('/api/health', (_req, res) => {
     onlineCount: getUniqueOnlineUsers().length,
     serverTime: Date.now(),
   });
+});
+
+// Helper: Parse LRC synced lyrics format "[mm:ss.xx] Lyric text"
+function parseLrcLyrics(lrc: string): LyricLine[] {
+  const lines: LyricLine[] = [];
+  const rawLines = lrc.split(/\r?\n/);
+  const timeRegex = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g;
+
+  for (const raw of rawLines) {
+    const matches = Array.from(raw.matchAll(timeRegex));
+    if (matches.length === 0) continue;
+    const text = raw.replace(timeRegex, '').trim();
+    if (!text) continue;
+    for (const m of matches) {
+      const mins = parseInt(m[1], 10);
+      const secs = parseInt(m[2], 10);
+      const msPart = m[3] ? parseInt(m[3].padEnd(3, '0'), 10) : 0;
+      const totalSec = mins * 60 + secs + msPart / 1000;
+      lines.push({ time: totalSec, text });
+    }
+  }
+  return lines.sort((a, b) => a.time - b.time);
+}
+
+// Helper: Clean messy YouTube titles ("Sơn Tùng M-TP - Nơi Này Có Anh | Official Music Video")
+function cleanYouTubeTitleForLyrics(rawTitle: string, rawAuthor: string): {
+  trackName: string;
+  artistName: string;
+  combinedQuery: string;
+} {
+  let cleaned = rawTitle
+    .replace(/\[.*?\]/g, ' ')
+    .replace(/\((?:official|mv|music video|audio|lyrics|lyric video|hd|4k|live|session|prod\.?[^)]*|ft\.?[^)]*|feat\.?[^)]*)\)/gi, ' ')
+    .replace(/\|.*$/g, ' ')
+    .replace(/official\s*(music)?\s*video/gi, ' ')
+    .replace(/lyric\s*video/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const cleanAuthor = rawAuthor
+    .replace(/-\s*Topic$/i, '')
+    .replace(/Official$/i, '')
+    .replace(/VEVO$/i, '')
+    .trim();
+
+  // Split "Artist - Song Name" if present
+  const dashParts = cleaned.split(/\s+[-–—]\s+/);
+  if (dashParts.length >= 2) {
+    const left = dashParts[0].trim();
+    const right = dashParts.slice(1).join(' ').trim();
+    // If left side matches author, left is artist & right is track; otherwise try right as track
+    if (cleanAuthor && left.toLowerCase().includes(cleanAuthor.toLowerCase().split(' ')[0])) {
+      return { trackName: right, artistName: left, combinedQuery: `${right} ${left}` };
+    }
+    return { trackName: right, artistName: left, combinedQuery: `${left} ${right}` };
+  }
+
+  return {
+    trackName: cleaned,
+    artistName: cleanAuthor,
+    combinedQuery: cleanAuthor ? `${cleaned} ${cleanAuthor}` : cleaned,
+  };
+}
+
+// Synced & Plain Lyrics API (Powered by LRCLIB + Smart YouTube Title Cleaner + Bounded LRU Cache)
+app.get('/api/lyrics', searchApiLimiter, async (req, res) => {
+  try {
+    const rawTitle = sanitizeText(String(req.query.title || ''), 160);
+    const rawAuthor = sanitizeText(String(req.query.author || ''), 100);
+    const duration = Number(req.query.duration || 0);
+
+    if (!rawTitle) {
+      res.status(400).json({ found: false, isSynced: false, lines: [] });
+      return;
+    }
+
+    const cacheKey = `${rawTitle.toLowerCase()}|${rawAuthor.toLowerCase()}`;
+    const cached = lyricsCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < LYRICS_CACHE_TTL_MS) {
+      res.json(cached.data);
+      return;
+    }
+
+    const { trackName, artistName, combinedQuery } = cleanYouTubeTitleForLyrics(rawTitle, rawAuthor);
+
+    const fetchLrclib = async (url: string): Promise<any[]> => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4500);
+      try {
+        const resp = await fetch(url, {
+          headers: { 'User-Agent': 'TiemTraAcoustic/1.0 (https://github.com/listen-together)' },
+          signal: controller.signal,
+        });
+        if (!resp.ok) return [];
+        const json = await resp.json();
+        return Array.isArray(json) ? json : [];
+      } catch {
+        return [];
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
+    // Try 1: Search with track_name + artist_name
+    let candidates: any[] = [];
+    if (trackName && artistName) {
+      candidates = await fetchLrclib(
+        `https://lrclib.net/api/search?track_name=${encodeURIComponent(trackName)}&artist_name=${encodeURIComponent(artistName)}`
+      );
+    }
+    // Try 2: Broad query search with cleaned track + artist
+    if (candidates.length === 0) {
+      candidates = await fetchLrclib(
+        `https://lrclib.net/api/search?q=${encodeURIComponent(combinedQuery)}`
+      );
+    }
+    // Try 3: Just trackName alone
+    if (candidates.length === 0 && trackName) {
+      candidates = await fetchLrclib(
+        `https://lrclib.net/api/search?q=${encodeURIComponent(trackName)}`
+      );
+    }
+
+    // Score candidates: strongly prefer syncedLyrics & matching duration
+    let best: any = null;
+    let bestScore = -1;
+    for (const c of candidates) {
+      if (!c.syncedLyrics && !c.plainLyrics) continue;
+      let score = c.syncedLyrics ? 100 : 30;
+      if (duration > 0 && typeof c.duration === 'number') {
+        const diff = Math.abs(c.duration - duration);
+        if (diff <= 5) score += 40;
+        else if (diff <= 15) score += 20;
+        else if (diff > 60) score -= 25;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = c;
+      }
+    }
+
+    let result: LyricsResponse = { found: false, isSynced: false, lines: [] };
+    if (best) {
+      if (best.syncedLyrics) {
+        const parsedLines = parseLrcLyrics(String(best.syncedLyrics));
+        if (parsedLines.length > 0) {
+          result = {
+            found: true,
+            isSynced: true,
+            lines: parsedLines,
+            plainLyrics: best.plainLyrics ? String(best.plainLyrics) : undefined,
+            source: 'LRCLIB Synced',
+          };
+        }
+      }
+      if (!result.found && best.plainLyrics) {
+        const plainLines = String(best.plainLyrics)
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .map((text) => ({ time: -1, text }));
+        result = {
+          found: true,
+          isSynced: false,
+          lines: plainLines,
+          plainLyrics: String(best.plainLyrics),
+          source: 'LRCLIB Lyrics',
+        };
+      }
+    }
+
+    setBoundedMap(lyricsCache, cacheKey, { timestamp: Date.now(), data: result }, MAX_LYRICS_CACHE_ITEMS);
+    res.json(result);
+  } catch (err) {
+    console.error('Lyrics API error:', err);
+    res.json({ found: false, isSynced: false, lines: [] });
+  }
 });
 
 // AI MC Voice TTS Proxy (Vietnamese natural voice, rate-limited + LRU cached against DDoS)
