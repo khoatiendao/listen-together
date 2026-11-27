@@ -274,17 +274,13 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
         Boolean(payload.serverBootId) &&
         prevState.initialServerBootId !== payload.serverBootId;
 
-      // If this is a reconnect right after a fresh Render deploy whose playback reset to default seed track,
+      // If this is a reconnect right after a fresh Render deploy whose playback reset to empty,
       // preserve the user's currently playing track locally so their music NEVER cuts out mid-song!
-      const isServerDefaultSeed =
-        payload.playback.currentTrack?.id?.startsWith('seed-') &&
-        payload.playback.currentTrack?.requestedByClientId === 'system';
-      const userAlreadyListeningToRealSong =
-        Boolean(prevState.playback.currentTrack) &&
-        !prevState.playback.currentTrack?.id?.startsWith('seed-');
+      const isServerEmptyAfterDeploy = !payload.playback.currentTrack;
+      const userAlreadyListeningToRealSong = Boolean(prevState.playback.currentTrack);
 
       const nextPlayback =
-        isNewDeploy && isServerDefaultSeed && userAlreadyListeningToRealSong
+        isNewDeploy && isServerEmptyAfterDeploy && userAlreadyListeningToRealSong
           ? prevState.playback
           : payload.playback;
 

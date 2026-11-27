@@ -153,35 +153,7 @@ io.use((socket, next) => {
   return next();
 });
 
-// 3. Default Curated Acoustic / Lofi Tea Room Tracks
-const DEFAULT_TEA_TRACKS: Omit<TrackItem, 'id' | 'createdAt' | 'priorityVotes'>[] = [
-  {
-    videoId: 'jfKfPfyJRdk',
-    title: 'lofi hip hop radio - beats to relax/study to',
-    author: 'Lofi Girl',
-    thumbnail: 'https://i.ytimg.com/vi/jfKfPfyJRdk/hqdefault.jpg',
-    duration: 0,
-    durationText: 'LIVE Chill',
-    requestedBy: 'Chủ Quán Trà',
-    requestedByClientId: 'system',
-    requestedByAvatar: '🍵',
-    dedicationMessage: 'Chào mừng anh em đến với Tiệm Trà Acoustic! Chọn một tách trà và cùng chill nhé.',
-  },
-  {
-    videoId: '5yx6BWlEVcY',
-    title: 'Chillhop Radio - jazzy & lofi hip hop beats',
-    author: 'Chillhop Music',
-    thumbnail: 'https://i.ytimg.com/vi/5yx6BWlEVcY/hqdefault.jpg',
-    duration: 0,
-    durationText: 'Acoustic Chill',
-    requestedBy: 'Chủ Quán Trà',
-    requestedByClientId: 'system',
-    requestedByAvatar: '🌿',
-    dedicationMessage: 'Nhạc nhẹ nhàng cho buổi làm việc tập trung và thư giãn.',
-  },
-];
-
-// 4. In-Memory Room State & Priority Votes Map
+// 3. In-Memory Room State & Priority Votes Map (Starts completely empty — no pre-seeded Lofi/Chillhop tracks)
 const priorityVotesMap = new Map<string, Set<string>>(); // trackId -> Set of clientIds
 
 function getEnrichedQueue(): TrackItem[] {
@@ -199,23 +171,16 @@ let initialTrack: TrackItem | null = null;
 const savedTrackJson = dbService.getMeta('currentTrack');
 if (savedTrackJson) {
   try {
-    initialTrack = JSON.parse(savedTrackJson);
+    const parsed = JSON.parse(savedTrackJson);
+    // Discard any legacy system seed tracks if they existed in an old SQLite file
+    if (parsed && parsed.requestedByClientId !== 'system') {
+      initialTrack = parsed;
+    } else {
+      dbService.setMeta('currentTrack', '');
+    }
   } catch {
     initialTrack = null;
   }
-}
-
-if (!initialTrack && queue.length === 0) {
-  DEFAULT_TEA_TRACKS.forEach((t, idx) => {
-    const item: TrackItem = {
-      ...t,
-      id: `seed-${Date.now()}-${idx}`,
-      createdAt: Date.now() + idx,
-      priorityVotes: [],
-    };
-    dbService.addTrackToQueue(item);
-  });
-  queue = getEnrichedQueue();
 }
 
 if (!initialTrack && queue.length > 0) {
@@ -226,7 +191,7 @@ if (!initialTrack && queue.length > 0) {
 
 const playback: PlaybackState = {
   currentTrack: initialTrack,
-  isPlaying: true,
+  isPlaying: Boolean(initialTrack),
   position: 0,
   lastUpdatedAt: Date.now(),
   skipVotes: [],
@@ -615,18 +580,49 @@ function parseLrcLyrics(lrc: string): LyricLine[] {
   return lines.sort((a, b) => a.time - b.time);
 }
 
+// Helper: Normalize Vietnamese & Latin strings for accurate fuzzy matching
+function normalizeForMatch(str: string): string {
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenOverlapRatio(source: string, target: string): number {
+  const srcTokens = normalizeForMatch(source)
+    .split(' ')
+    .filter((w) => w.length >= 2);
+  const tgtNorm = normalizeForMatch(target);
+  if (srcTokens.length === 0 || !tgtNorm) return 0;
+  let matched = 0;
+  for (const tok of srcTokens) {
+    if (tgtNorm.includes(tok)) matched += 1;
+  }
+  return matched / srcTokens.length;
+}
+
 // Helper: Clean messy YouTube titles ("Sơn Tùng M-TP - Nơi Này Có Anh | Official Music Video")
 function cleanYouTubeTitleForLyrics(rawTitle: string, rawAuthor: string): {
   trackName: string;
   artistName: string;
+  altTrackName?: string;
+  altArtistName?: string;
   combinedQuery: string;
 } {
   let cleaned = rawTitle
     .replace(/\[.*?\]/g, ' ')
-    .replace(/\((?:official|mv|music video|audio|lyrics|lyric video|hd|4k|live|session|prod\.?[^)]*|ft\.?[^)]*|feat\.?[^)]*)\)/gi, ' ')
+    .replace(
+      /\((?:official|mv|music video|audio|lyrics|lyric video|hd|4k|live|session|prod\.?[^)]*|ft\.?[^)]*|feat\.?[^)]*|x\s+[^)]*)\)/gi,
+      ' '
+    )
     .replace(/\|.*$/g, ' ')
     .replace(/official\s*(music)?\s*video/gi, ' ')
     .replace(/lyric\s*video/gi, ' ')
+    .replace(/\bmv\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -634,18 +630,47 @@ function cleanYouTubeTitleForLyrics(rawTitle: string, rawAuthor: string): {
     .replace(/-\s*Topic$/i, '')
     .replace(/Official$/i, '')
     .replace(/VEVO$/i, '')
+    .replace(/Entertainment$/i, '')
+    .replace(/Music$/i, '')
     .trim();
 
-  // Split "Artist - Song Name" if present
   const dashParts = cleaned.split(/\s+[-–—]\s+/);
   if (dashParts.length >= 2) {
     const left = dashParts[0].trim();
-    const right = dashParts.slice(1).join(' ').trim();
-    // If left side matches author, left is artist & right is track; otherwise try right as track
-    if (cleanAuthor && left.toLowerCase().includes(cleanAuthor.toLowerCase().split(' ')[0])) {
-      return { trackName: right, artistName: left, combinedQuery: `${right} ${left}` };
+    const right = dashParts[1].trim();
+    const leftMatchesAuthor =
+      cleanAuthor &&
+      tokenOverlapRatio(cleanAuthor, left) >= 0.45;
+    const rightMatchesAuthor =
+      cleanAuthor &&
+      tokenOverlapRatio(cleanAuthor, right) >= 0.45;
+
+    if (leftMatchesAuthor && !rightMatchesAuthor) {
+      return {
+        trackName: right,
+        artistName: left,
+        altTrackName: left,
+        altArtistName: right,
+        combinedQuery: `${right} ${left}`,
+      };
     }
-    return { trackName: right, artistName: left, combinedQuery: `${left} ${right}` };
+    if (rightMatchesAuthor && !leftMatchesAuthor) {
+      return {
+        trackName: left,
+        artistName: right,
+        altTrackName: right,
+        altArtistName: left,
+        combinedQuery: `${left} ${right}`,
+      };
+    }
+    // Ambiguous order: try both "right by left" and "left by right"
+    return {
+      trackName: right,
+      artistName: left,
+      altTrackName: left,
+      altArtistName: right,
+      combinedQuery: `${left} ${right}`,
+    };
   }
 
   return {
@@ -655,7 +680,7 @@ function cleanYouTubeTitleForLyrics(rawTitle: string, rawAuthor: string): {
   };
 }
 
-// Synced & Plain Lyrics API (Powered by LRCLIB + Smart YouTube Title Cleaner + Bounded LRU Cache)
+// Synced & Plain Lyrics API (Powered by LRCLIB + Strict Title/Artist Similarity Guard)
 app.get('/api/lyrics', searchApiLimiter, async (req, res) => {
   try {
     const rawTitle = sanitizeText(String(req.query.title || ''), 160);
@@ -667,14 +692,15 @@ app.get('/api/lyrics', searchApiLimiter, async (req, res) => {
       return;
     }
 
-    const cacheKey = `${rawTitle.toLowerCase()}|${rawAuthor.toLowerCase()}`;
+    const cacheKey = `${rawTitle.toLowerCase()}|${rawAuthor.toLowerCase()}|${duration}`;
     const cached = lyricsCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < LYRICS_CACHE_TTL_MS) {
       res.json(cached.data);
       return;
     }
 
-    const { trackName, artistName, combinedQuery } = cleanYouTubeTitleForLyrics(rawTitle, rawAuthor);
+    const { trackName, artistName, altTrackName, altArtistName, combinedQuery } =
+      cleanYouTubeTitleForLyrics(rawTitle, rawAuthor);
 
     const fetchLrclib = async (url: string): Promise<any[]> => {
       const controller = new AbortController();
@@ -694,38 +720,73 @@ app.get('/api/lyrics', searchApiLimiter, async (req, res) => {
       }
     };
 
-    // Try 1: Search with track_name + artist_name
-    let candidates: any[] = [];
+    // Fetch candidates in parallel for primary & swapped order so we never miss "Song - Artist" vs "Artist - Song"
+    const searchUrls: string[] = [];
     if (trackName && artistName) {
-      candidates = await fetchLrclib(
+      searchUrls.push(
         `https://lrclib.net/api/search?track_name=${encodeURIComponent(trackName)}&artist_name=${encodeURIComponent(artistName)}`
       );
     }
-    // Try 2: Broad query search with cleaned track + artist
-    if (candidates.length === 0) {
-      candidates = await fetchLrclib(
-        `https://lrclib.net/api/search?q=${encodeURIComponent(combinedQuery)}`
+    if (altTrackName && altArtistName) {
+      searchUrls.push(
+        `https://lrclib.net/api/search?track_name=${encodeURIComponent(altTrackName)}&artist_name=${encodeURIComponent(altArtistName)}`
       );
     }
-    // Try 3: Just trackName alone
-    if (candidates.length === 0 && trackName) {
-      candidates = await fetchLrclib(
-        `https://lrclib.net/api/search?q=${encodeURIComponent(trackName)}`
-      );
+    searchUrls.push(`https://lrclib.net/api/search?q=${encodeURIComponent(combinedQuery)}`);
+
+    const allBatches = await Promise.all(searchUrls.map(fetchLrclib));
+    const seenIds = new Set<number>();
+    const candidates: any[] = [];
+    for (const batch of allBatches) {
+      for (const item of batch) {
+        if (item && typeof item.id === 'number' && !seenIds.has(item.id)) {
+          seenIds.add(item.id);
+          candidates.push(item);
+        }
+      }
     }
 
-    // Score candidates: strongly prefer syncedLyrics & matching duration
+    // Strict Relevance Scoring: reject wrong songs completely!
+    const fullYouTubeText = `${rawTitle} ${rawAuthor}`;
     let best: any = null;
-    let bestScore = -1;
+    let bestScore = -999;
+
     for (const c of candidates) {
       if (!c.syncedLyrics && !c.plainLyrics) continue;
-      let score = c.syncedLyrics ? 100 : 30;
+      const candTrack = String(c.trackName || c.name || '');
+      const candArtist = String(c.artistName || '');
+
+      // Check how well candidate track name matches the YouTube title
+      const trackMatchPrimary = Math.max(
+        tokenOverlapRatio(candTrack, rawTitle),
+        tokenOverlapRatio(trackName, candTrack),
+        altTrackName ? tokenOverlapRatio(altTrackName, candTrack) : 0
+      );
+
+      // Check how well candidate artist matches either YouTube title or channel author
+      const artistMatch = Math.max(
+        tokenOverlapRatio(candArtist, fullYouTubeText),
+        artistName ? tokenOverlapRatio(artistName, candArtist) : 0,
+        altArtistName ? tokenOverlapRatio(altArtistName, candArtist) : 0
+      );
+
+      // HARD REJECT: If track name barely overlaps (< 55%) -> it's a completely different song!
+      if (trackMatchPrimary < 0.55) continue;
+      // HARD REJECT: If neither artist matches (>= 30%) AND track isn't an almost exact match (< 85%) -> wrong song!
+      if (artistMatch < 0.3 && trackMatchPrimary < 0.85) continue;
+
+      let score = trackMatchPrimary * 100 + artistMatch * 65;
+      if (c.syncedLyrics) score += 35;
+
+      // Duration matching (YouTube MVs can have intro/outro of 15-45s, so penalize only extreme mismatches)
       if (duration > 0 && typeof c.duration === 'number') {
         const diff = Math.abs(c.duration - duration);
-        if (diff <= 5) score += 40;
-        else if (diff <= 15) score += 20;
-        else if (diff > 60) score -= 25;
+        if (diff <= 5) score += 30;
+        else if (diff <= 15) score += 18;
+        else if (diff <= 40) score += 5;
+        else if (diff > 90) score -= 50; // Probably wrong version / mashup / 1-hour loop
       }
+
       if (score > bestScore) {
         bestScore = score;
         best = c;
@@ -733,7 +794,7 @@ app.get('/api/lyrics', searchApiLimiter, async (req, res) => {
     }
 
     let result: LyricsResponse = { found: false, isSynced: false, lines: [] };
-    if (best) {
+    if (best && bestScore >= 75) {
       if (best.syncedLyrics) {
         const parsedLines = parseLrcLyrics(String(best.syncedLyrics));
         if (parsedLines.length > 0) {
@@ -742,7 +803,7 @@ app.get('/api/lyrics', searchApiLimiter, async (req, res) => {
             isSynced: true,
             lines: parsedLines,
             plainLyrics: best.plainLyrics ? String(best.plainLyrics) : undefined,
-            source: 'LRCLIB Synced',
+            source: `${best.trackName || ''} — ${best.artistName || ''}`.trim(),
           };
         }
       }
@@ -757,7 +818,7 @@ app.get('/api/lyrics', searchApiLimiter, async (req, res) => {
           isSynced: false,
           lines: plainLines,
           plainLyrics: String(best.plainLyrics),
-          source: 'LRCLIB Lyrics',
+          source: `${best.trackName || ''} — ${best.artistName || ''}`.trim(),
         };
       }
     }

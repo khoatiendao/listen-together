@@ -106,6 +106,8 @@ export const StagePlayer: React.FC = () => {
   // Synced Lyrics state
   const [lyricsData, setLyricsData] = useState<LyricsResponse | null>(null);
   const [isLoadingLyrics, setIsLoadingLyrics] = useState(false);
+  const [lyricOffsetSec, setLyricOffsetSec] = useState(0); // User-adjustable timing offset (seconds) for YouTube MVs with intros
+  const [liveAudioTime, setLiveAudioTime] = useState(0); // High-frequency (120ms) actual YT audio time for zero-lag lyrics
   const lyricsContainerRef = useRef<HTMLDivElement | null>(null);
   const lastFetchedLyricsTrackIdRef = useRef<string | null>(null);
 
@@ -184,7 +186,7 @@ export const StagePlayer: React.FC = () => {
       playerRef.current = new window.YT.Player('yt-hidden-player', {
         height: '100%',
         width: '100%',
-        videoId: initialState.playback.currentTrack?.videoId || 'jfKfPfyJRdk',
+        videoId: initialState.playback.currentTrack?.videoId || '',
         playerVars: {
           autoplay: 1,
           controls: 0,
@@ -461,6 +463,7 @@ export const StagePlayer: React.FC = () => {
     let cancelled = false;
     setIsLoadingLyrics(true);
     setLyricsData(null);
+    setLyricOffsetSec(0);
 
     const params = new URLSearchParams({
       title: currentTrack.title,
@@ -491,12 +494,34 @@ export const StagePlayer: React.FC = () => {
     };
   }, [playback.currentTrack?.id]);
 
-  // Compute current active lyric line index based on real-time playback position
+  // High-frequency (120ms) audio position poller ONLY while in Lyrics mode so lyrics highlight instantaneously with zero lag
+  useEffect(() => {
+    if (stageMode !== 'lyrics' || !playerReady) return;
+    const fastTimer = setInterval(() => {
+      try {
+        const pState = playerRef.current?.getPlayerState?.();
+        if (pState === 1 || pState === 2) {
+          const actual = Number(playerRef.current?.getCurrentTime?.() || 0);
+          if (actual > 0) {
+            setLiveAudioTime(actual);
+            return;
+          }
+        }
+      } catch {
+        // ignore
+      }
+      setLiveAudioTime(useRoomStore.getState().getSyncedPlaybackPosition());
+    }, 120);
+    return () => clearInterval(fastTimer);
+  }, [stageMode, playerReady]);
+
+  // Compute current active lyric line index using real-time YT audio position + user offset + 0.55s natural lead-in
   const activeLyricIndex = (() => {
     if (!lyricsData?.found || !lyricsData.isSynced || lyricsData.lines.length === 0) return -1;
+    const effectiveTime = (stageMode === 'lyrics' && liveAudioTime > 0 ? liveAudioTime : displayPos) + lyricOffsetSec + 0.55;
     let idx = -1;
     for (let i = 0; i < lyricsData.lines.length; i++) {
-      if (displayPos + 0.35 >= lyricsData.lines[i].time) {
+      if (effectiveTime >= lyricsData.lines[i].time) {
         idx = i;
       } else {
         break;
@@ -921,15 +946,50 @@ export const StagePlayer: React.FC = () => {
       {/* Synced Karaoke-Style Lyrics Stage Panel */}
       {stageMode === 'lyrics' && track && (
         <div className="relative z-10 mb-5 rounded-2xl bg-gradient-to-b from-tea-100/90 via-tea-50/90 to-matcha-50/80 dark:from-zinc-950 dark:via-zinc-900 dark:to-emerald-950/30 border border-tea-200 dark:border-zinc-800 shadow-inner overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-tea-200/70 dark:border-zinc-800 flex items-center justify-between text-xs">
-            <span className="font-semibold text-tea-800 dark:text-zinc-200 flex items-center gap-1.5">
-              <AlignLeft className="w-3.5 h-3.5 text-matcha-600 dark:text-emerald-400" />
-              <span>Lời Bài Hát (Lyric)</span>
-            </span>
-            {lyricsData?.found && (
-              <span className="px-2 py-0.5 rounded-full bg-matcha-100 dark:bg-emerald-950 text-matcha-700 dark:text-emerald-300 text-[10px] font-semibold">
-                {lyricsData.isSynced ? '✨ Tự động chạy theo nhạc' : '📜 Lời bài hát gốc'}
+          <div className="px-4 py-2.5 border-b border-tea-200/70 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <AlignLeft className="w-3.5 h-3.5 text-matcha-600 dark:text-emerald-400 shrink-0" />
+              <span className="font-semibold text-tea-800 dark:text-zinc-200 truncate">
+                {lyricsData?.found && lyricsData.source
+                  ? `Lyric: ${lyricsData.source}`
+                  : 'Lời Bài Hát (Lyric)'}
               </span>
+            </div>
+
+            {lyricsData?.found && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                {lyricsData.isSynced && (
+                  <div
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg bg-white/80 dark:bg-zinc-800 border border-tea-200 dark:border-zinc-700 text-[10px] font-semibold text-tea-700 dark:text-zinc-300"
+                    title="Chỉnh lệch giây nếu MV YouTube có đoạn Intro mở đầu dài hơn bản Audio"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setLyricOffsetSec((o) => Number((o - 0.5).toFixed(1)))}
+                      className="px-1.5 hover:text-matcha-600 dark:hover:text-emerald-400 transition"
+                      title="Lùi lời chậm lại 0.5 giây"
+                    >
+                      -0.5s
+                    </button>
+                    <span className="min-w-[34px] text-center text-matcha-700 dark:text-emerald-400">
+                      {lyricOffsetSec === 0
+                        ? 'Khớp'
+                        : `${lyricOffsetSec > 0 ? '+' : ''}${lyricOffsetSec}s`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setLyricOffsetSec((o) => Number((o + 0.5).toFixed(1)))}
+                      className="px-1.5 hover:text-matcha-600 dark:hover:text-emerald-400 transition"
+                      title="Đẩy lời chạy nhanh hơn 0.5 giây"
+                    >
+                      +0.5s
+                    </button>
+                  </div>
+                )}
+                <span className="px-2 py-0.5 rounded-full bg-matcha-100 dark:bg-emerald-950 text-matcha-700 dark:text-emerald-300 text-[10px] font-semibold">
+                  {lyricsData.isSynced ? '✨ Sync' : '📜 Lyric'}
+                </span>
+              </div>
             )}
           </div>
 
@@ -1178,15 +1238,106 @@ export const StagePlayer: React.FC = () => {
           </div>
         </div>
       ) : (
-        <div className="relative z-10 py-12 text-center">
-          <div className="w-16 h-16 mx-auto mb-3 rounded-full bg-tea-100 dark:bg-zinc-800 text-tea-600 dark:text-zinc-300 flex items-center justify-center text-2xl">
-            🍵
+        <div className="relative z-10 py-6 sm:py-8 px-4 flex flex-col items-center justify-center text-center">
+          {/* Speech Bubble pointing to mascot */}
+          <div className="relative mb-3 px-4 py-2 rounded-2xl bg-matcha-100 dark:bg-emerald-950/90 border border-matcha-300 dark:border-emerald-700 text-xs sm:text-sm font-semibold text-matcha-800 dark:text-emerald-200 shadow-sm">
+            <span>Meow~ Phòng trà đang yên ắng quá, bạn thêm một bản nhạc đi! 🎶</span>
+            <div className="absolute left-1/2 -bottom-2 -translate-x-1/2 w-3.5 h-3.5 bg-matcha-100 dark:bg-emerald-950 border-r border-b border-matcha-300 dark:border-emerald-700 rotate-45" />
           </div>
-          <h3 className="font-serif text-lg font-bold text-tea-900 dark:text-white">
-            Sân khấu đang chờ giai điệu mới
+
+          {/* Animated Cute Cat Mascot wearing Headphones & Holding a Tea Cup */}
+          <div className="relative w-40 h-36 flex items-center justify-center">
+            <svg
+              viewBox="0 0 160 140"
+              className="w-40 h-36 drop-shadow-md overflow-visible"
+              aria-label="Mèo Phòng Trà đang chờ thêm nhạc"
+            >
+              {/* Floating Music Notes */}
+              <text x="16" y="34" fontSize="16" className="animate-note-1 fill-matcha-600 dark:fill-emerald-400">
+                🎵
+              </text>
+              <text x="128" y="28" fontSize="15" className="animate-note-2 fill-amber-500">
+                🎶
+              </text>
+
+              {/* Soft Ground Shadow */}
+              <ellipse cx="80" cy="126" rx="44" ry="8" className="fill-tea-200/80 dark:fill-zinc-800" />
+
+              {/* Wagging Tail */}
+              <path
+                d="M108 98 C132 95, 138 72, 126 64"
+                fill="none"
+                stroke="#D1B37B"
+                strokeWidth="9"
+                strokeLinecap="round"
+                className="animate-cat-tail"
+              />
+
+              {/* Bobbing Cat Body & Head Group */}
+              <g className="animate-cat-bob">
+                {/* Cat Body */}
+                <ellipse cx="80" cy="100" rx="34" ry="26" fill="#F3DFC1" stroke="#A67C46" strokeWidth="2.5" />
+                {/* Cream Belly */}
+                <ellipse cx="80" cy="105" rx="20" ry="16" fill="#FDFBF7" />
+
+                {/* Cat Ears */}
+                <polygon points="52,55 46,28 70,44" fill="#F3DFC1" stroke="#A67C46" strokeWidth="2.5" strokeLinejoin="round" />
+                <polygon points="54,50 51,35 65,45" fill="#F5B7B1" />
+                <polygon points="108,55 114,28 90,44" fill="#F3DFC1" stroke="#A67C46" strokeWidth="2.5" strokeLinejoin="round" />
+                <polygon points="106,50 109,35 95,45" fill="#F5B7B1" />
+
+                {/* Headphone Band */}
+                <path
+                  d="M44 66 C44 30, 116 30, 116 66"
+                  fill="none"
+                  stroke="#437134"
+                  strokeWidth="6"
+                  strokeLinecap="round"
+                />
+
+                {/* Cat Head */}
+                <ellipse cx="80" cy="68" rx="34" ry="27" fill="#F3DFC1" stroke="#A67C46" strokeWidth="2.5" />
+
+                {/* Forehead Stripes */}
+                <path d="M74 44 L74 51 M80 42 L80 51 M86 44 L86 51" stroke="#C19A5B" strokeWidth="2.5" strokeLinecap="round" />
+
+                {/* Headphone Ear Cups */}
+                <rect x="37" y="56" width="12" height="24" rx="6" fill="#578E45" stroke="#365A2B" strokeWidth="2" />
+                <rect x="111" y="56" width="12" height="24" rx="6" fill="#578E45" stroke="#365A2B" strokeWidth="2" />
+
+                {/* Blinking Eyes */}
+                <g className="animate-cat-blink">
+                  <circle cx="66" cy="68" r="4.2" fill="#3D2B1F" />
+                  <circle cx="67.5" cy="66.5" r="1.4" fill="#FFFFFF" />
+                  <circle cx="94" cy="68" r="4.2" fill="#3D2B1F" />
+                  <circle cx="95.5" cy="66.5" r="1.4" fill="#FFFFFF" />
+                </g>
+
+                {/* Cute Rosy Cheeks */}
+                <ellipse cx="56" cy="75" rx="5.5" ry="3" fill="#F5B7B1" opacity="0.8" />
+                <ellipse cx="104" cy="75" rx="5.5" ry="3" fill="#F5B7B1" opacity="0.8" />
+
+                {/* Nose & Smile */}
+                <polygon points="77,74 83,74 80,77" fill="#E07A5F" />
+                <path d="M74 79 Q77 83 80 78 Q83 83 86 79" fill="none" stroke="#6D4F32" strokeWidth="2" strokeLinecap="round" />
+
+                {/* Little Matcha Tea Cup held by paws */}
+                <rect x="69" y="96" width="22" height="17" rx="5" fill="#FFFFFF" stroke="#578E45" strokeWidth="2" />
+                <path d="M91 100 C96 100, 96 108, 91 108" fill="none" stroke="#578E45" strokeWidth="2" />
+                <rect x="72" y="99" width="16" height="4" rx="2" fill="#78AB66" />
+
+                {/* Paws */}
+                <ellipse cx="66" cy="105" rx="6.5" ry="5" fill="#F3DFC1" stroke="#A67C46" strokeWidth="2" />
+                <ellipse cx="94" cy="105" rx="6.5" ry="5" fill="#F3DFC1" stroke="#A67C46" strokeWidth="2" />
+              </g>
+            </svg>
+          </div>
+
+          <h3 className="font-serif text-lg sm:text-xl font-bold text-tea-900 dark:text-white mt-1">
+            Sân khấu đang trống, chờ bạn mở màn!
           </h3>
-          <p className="text-xs sm:text-sm text-tea-600 dark:text-zinc-400 mt-1">
-            Hãy tìm kiếm một bài hát trên thanh Topbar để mở màn cho phòng trà nhé!
+          <p className="text-xs sm:text-sm text-tea-600 dark:text-zinc-400 mt-1 max-w-md">
+            Hãy gõ tên bài hát lên <strong>Thanh Tìm Nhạc trên đầu trang</strong> hoặc chọn một tâm trạng ở <strong>Gợi Ý Theo Cảm Xúc</strong> bên dưới nhé!
           </p>
         </div>
       )}
