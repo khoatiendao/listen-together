@@ -1173,7 +1173,7 @@ export const TeaTableChat: React.FC = () => {
           }
           maxLength={260}
           style={{ height: '40px', overflowY: 'hidden' }}
-          className="flex-1 px-4 py-2 rounded-2xl bg-white dark:bg-zinc-800 border border-tea-200 dark:border-zinc-700 text-xs sm:text-sm text-tea-900 dark:text-zinc-100 placeholder-tea-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-matcha-500 dark:focus:ring-emerald-500 transition-[border,box-shadow] resize-none leading-5 min-h-[40px] max-h-[116px]"
+          className="flex-1 px-4 py-2 rounded-2xl bg-white dark:bg-zinc-800 border border-tea-200 dark:border-zinc-700 text-xs sm:text-sm text-tea-900 dark:text-zinc-100 placeholder-tea-400 dark:placeholder-zinc-500 placeholder:text-[11px] sm:placeholder:text-xs focus:outline-none focus:ring-2 focus:ring-matcha-500 dark:focus:ring-emerald-500 transition-[border,box-shadow] resize-none leading-5 min-h-[40px] max-h-[116px]"
         />
         <button
           type="submit"
